@@ -83,7 +83,7 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli> {
             .ok_or_else(|| anyhow!("--provider requires a name\n\n{USAGE}"))?;
         Provider::parse(&v)
             .map(Some)
-            .ok_or_else(|| anyhow!("unknown provider {v:?}; known: claude, codex"))
+            .ok_or_else(|| anyhow!("unknown provider {v:?}; known: claude, codex, omp, pi"))
     };
 
     // `inspect <file>` is the one distinct (headless) subcommand.
