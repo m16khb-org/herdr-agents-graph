@@ -4,13 +4,17 @@
 //! are one `exec` each and need nothing beyond bash.
 //!
 //! - `resolve` prints `<provider> <id-or-path>` for the pane the plugin was
-//!   invoked from. That pane is `focused_pane_id` in
-//!   `HERDR_PLUGIN_CONTEXT_JSON`, never `HERDR_PANE_ID` (inside a pane command
-//!   that is the plugin's own new pane). herdr 0.9.3 reports Claude Code and
-//!   Codex sessions as `{kind: "id"}` and omp sessions as `{kind: "path"}`.
+//!   invoked for. That pane is `focused_pane_id` in the action's
+//!   `HERDR_PLUGIN_CONTEXT_JSON`, never `HERDR_PANE_ID` (inside a pane
+//!   command that is the plugin's own new pane). herdr 0.9.3 reports Claude
+//!   Code and Codex sessions as `{kind: "id"}` and omp sessions as
+//!   `{kind: "path"}`.
 //! - `toggle <placement>` opens the graph pane, or closes the one it opened
 //!   last. The open pane's id is kept in `HERDR_PLUGIN_STATE_DIR/open-pane`,
-//!   so the second press works wherever focus is.
+//!   so the second press works wherever focus is. A pane command's own
+//!   context names whatever is focused when the pane starts, which need not
+//!   be the pane the action was invoked for, so toggle hands that pane to the
+//!   new pane as [`TARGET_PANE_ENV`] and `resolve` reads it first.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,6 +27,9 @@ use serde_json::Value;
 pub const EXIT_UNRESOLVED: i32 = 2;
 
 const PLACEMENTS: [&str; 4] = ["overlay", "split", "tab", "zoomed"];
+
+/// Set by `toggle` on the graph pane it opens: the pane to draw.
+const TARGET_PANE_ENV: &str = "AGENTS_GRAPH_PANE";
 
 pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     match args.next().as_deref() {
@@ -81,12 +88,11 @@ fn herdr_json(args: &[&str]) -> Result<Value> {
 // ---------------------------------------------------------------------------
 
 fn resolve() -> std::result::Result<(&'static str, String), String> {
-    let ctx = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").unwrap_or_default();
-    let pane_id = serde_json::from_str::<Value>(&ctx)
-        .ok()
-        .and_then(|v| v.get("focused_pane_id")?.as_str().map(str::to_string))
-        .filter(|id| !id.is_empty())
-        .ok_or("no focused pane in the invocation context (HERDR_PLUGIN_CONTEXT_JSON)")?;
+    let pane_id = target_pane(
+        std::env::var(TARGET_PANE_ENV).ok(),
+        &std::env::var("HERDR_PLUGIN_CONTEXT_JSON").unwrap_or_default(),
+    )
+    .ok_or("no focused pane in the invocation context (HERDR_PLUGIN_CONTEXT_JSON)")?;
     let answer = herdr_json(&["pane", "get", &pane_id]).map_err(|e| format!("{e:#}"))?;
     let pane = answer
         .pointer("/result/pane")
@@ -162,6 +168,19 @@ fn target_of(
     Ok((provider, path.to_string_lossy().into_owned()))
 }
 
+/// The pane to draw: the one `toggle` named, else the invocation context's
+/// `focused_pane_id`.
+fn target_pane(named: Option<String>, context: &str) -> Option<String> {
+    named.filter(|id| !id.is_empty()).or_else(|| {
+        serde_json::from_str::<Value>(context)
+            .ok()?
+            .get("focused_pane_id")?
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // toggle
 // ---------------------------------------------------------------------------
@@ -191,17 +210,27 @@ fn toggle(placement: &str) -> Result<()> {
 
     let plugin = std::env::var("HERDR_PLUGIN_ID")
         .unwrap_or_else(|_| "m16khb.herdr-agents-graph".to_string());
-    let answer = herdr_json(&[
-        "plugin",
-        "pane",
-        "open",
-        "--plugin",
-        &plugin,
-        "--entrypoint",
-        "graph",
-        "--placement",
-        placement,
-    ])?;
+    let mut open = vec![
+        "plugin".to_string(),
+        "pane".into(),
+        "open".into(),
+        "--plugin".into(),
+        plugin,
+        "--entrypoint".into(),
+        "graph".into(),
+        "--placement".into(),
+        placement.into(),
+    ];
+    let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").unwrap_or_default();
+    if let Some(target) = target_pane(None, &context) {
+        open.extend(["--env".into(), format!("{TARGET_PANE_ENV}={target}")]);
+        // A split sits beside the pane it draws. herdr places overlays (and
+        // the other placements) on the active pane and rejects a target there.
+        if placement == "split" {
+            open.extend(["--target-pane".into(), target]);
+        }
+    }
+    let answer = herdr_json(&open.iter().map(String::as_str).collect::<Vec<_>>())?;
     let pane_id = find_pane_id(&answer)
         .ok_or_else(|| anyhow!("herdr plugin pane open answered without a pane id: {answer}"))?;
     std::fs::create_dir_all(&state_dir)
@@ -298,5 +327,23 @@ mod tests {
             Some("w1:p9")
         );
         assert_eq!(find_pane_id(&json!({"result": {}})), None);
+    }
+
+    /// The graph pane draws the pane its action was invoked for, not whatever
+    /// is focused by the time the pane starts.
+    #[test]
+    fn the_named_pane_outranks_the_pane_commands_own_focus() {
+        let focus = r#"{"focused_pane_id":"w1:p1"}"#;
+        assert_eq!(
+            target_pane(Some("w2:p7".into()), focus).as_deref(),
+            Some("w2:p7")
+        );
+        assert_eq!(
+            target_pane(Some(String::new()), focus).as_deref(),
+            Some("w1:p1")
+        );
+        assert_eq!(target_pane(None, focus).as_deref(), Some("w1:p1"));
+        assert_eq!(target_pane(None, "{}"), None);
+        assert_eq!(target_pane(None, ""), None);
     }
 }
