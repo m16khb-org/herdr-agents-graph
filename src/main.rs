@@ -66,7 +66,7 @@ USAGE:
     agents-graph <dir>               follow another project's live session
     agents-graph <file> --follow     follow a file's live edge instead of replaying
     agents-graph <file> --speed N    playback speed (default 8.0)
-    agents-graph --provider <name>   force the format (claude, codex) instead of detecting it
+    agents-graph --provider <name>   force the format (claude, codex, omp) instead of detecting it
     agents-graph inspect <file|id>   headless: print the session tree + info
     agents-graph --version           print the version and exit
 
@@ -83,7 +83,7 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli> {
             .ok_or_else(|| anyhow!("--provider requires a name\n\n{USAGE}"))?;
         Provider::parse(&v)
             .map(Some)
-            .ok_or_else(|| anyhow!("unknown provider {v:?}; known: claude, codex, omp, pi"))
+            .ok_or_else(|| anyhow!("unknown provider {v:?}; known: claude, codex, omp"))
     };
 
     // `inspect <file>` is the one distinct (headless) subcommand.
@@ -170,10 +170,14 @@ fn parse_session_fully(
     let mut model = SessionModel::new(session.id.clone());
     let mut info = agents_graph::state::SessionInfo::default();
     let p = session.provider;
+    // Statements that said something about an agent, as opposed to session
+    // metadata alone (a title, a cwd).
+    let mut activity = 0usize;
     let mut apply = |mut statement: agents_graph::fact::Statement| {
         for f in statement.take_session_meta() {
             info.apply(&f);
         }
+        activity += usize::from(!statement.facts.is_empty());
         for f in &statement.facts {
             model.apply_fact(f);
         }
@@ -196,6 +200,13 @@ fn parse_session_fully(
                 }
             }
         }
+    }
+    if activity == 0 {
+        bail!(
+            "{}: no agent activity in this {} session yet",
+            session.root.path.display(),
+            p.name()
+        );
     }
 
     // Group nodes have no direct completion signal — roll them up from their

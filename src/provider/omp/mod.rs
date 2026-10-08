@@ -1,7 +1,5 @@
-//! The omp/pi provider: [`wire::Entry`] in, [`Fact`]s out — one wire format,
-//! two providers. `Provider::Omp` and `Provider::Pi` share this module
-//! because their records are identical (see `wire.rs`); only where the files
-//! live and how `project_key` is spelled differ (`discovery.rs`).
+//! The omp provider: [`wire::Entry`] in, [`Fact`]s out. Where the files live
+//! and how `project_key` is spelled is [`discovery`].
 //!
 //! What this module knows that the model must not:
 //!
@@ -18,27 +16,33 @@
 //!   text delivered as a turn but authored by nobody: never a `Prompt`,
 //!   whatever its `customType`. It still marks activity — it did happen to
 //!   this agent's thread.
-//! - `tool_execution_start` duplicates the `toolCall` block that requested it
-//!   (same `toolCallId`, confirmed against real sessions: the two always
-//!   pair 1:1). It is not a second `ToolStart`, only activity.
-//! - `session_exit` is a real end marker, but only for a spawned child: the
-//!   interactive root never turns it into `Ended` — an interactive agent's
-//!   completion is unclaimable (ARCHITECTURE.md §2.1/§4; the same reason
-//!   Claude never emits `meta.stoppedByUser`). `kind: "normal"` is `Done`,
-//!   `"signal"` (sigterm/sighup, measured) is `Stopped`, anything else
-//!   (`"fatal"`, measured as an unhandled rejection) is `Failed`.
+//! - `tool_execution_start` repeats the `toolCall` block that requested it
+//!   (same `toolCallId`; measured 1:1). It is stated as the same `ToolStart`,
+//!   which the model folds once per call id, so a call whose assistant turn
+//!   is still unwritten when this record lands still shows up.
+//! - A spawned child ends from two places. The root's `task` result carries
+//!   `details.progress[]`, one entry per child with omp's `SubagentStatus`;
+//!   `completed` is `Done`, `failed` is `Failed`, `aborted` is `Stopped`, and
+//!   `pending`/`running` claim nothing. A background `task` returns while all
+//!   its children are still `pending` (every `task` result measured on this
+//!   machine), so the child's own `session_exit` is what usually lands:
+//!   `kind: "normal"` is `Done`, `"signal"` (sigterm/sighup) is `Stopped`,
+//!   anything else (`"fatal"`) is `Failed`. The interactive root never turns
+//!   its own `session_exit` into `Ended` — an interactive agent's completion
+//!   is unclaimable (ARCHITECTURE.md §2.1/§4; the same reason Claude never
+//!   emits `meta.stoppedByUser`).
 //! - `model_change` only updates this agent's running model when `role` is
 //!   absent or `"default"` — `"fallback"`/`"temporary"` (both measured)
 //!   describe a one-off override of a different model slot, not a change to
 //!   what this agent is running.
+//! - `thinking_level_change`, `credential_pin` and the other bookkeeping
+//!   records state nothing: they are not agent activity.
 //!
 //! **omp's subagent fan-out.** A `task` toolCall (`arguments.tasks[]`, a
 //! batch: it can name several children in one call) writes each child as a
-//! full sibling transcript, `<name>.jsonl`, beside the root file — not to
-//! `~/.omp/agent/history.db` as first assumed; that store is unrelated
-//! (measured: 212 sibling transcripts across 177 real projects on this box).
-//! The join between the spawning call and the child it named is by NAME, not
-//! id — the format shares no id between the two sides (unlike Claude's
+//! full sibling transcript, `<name>.jsonl`, beside the root file. The join
+//! between the spawning call and the child it named is by NAME, not id — the
+//! format shares no id between the two sides (unlike Claude's
 //! `meta.json`, which names its parent's `tool_use_id` directly). So:
 //!
 //! - a child's own stream states its `Agent` fact from `session_init`, keyed
@@ -60,25 +64,19 @@
 //! child whose stem never appears in any `task` call (an auto-named spawn, or
 //! an internal sidecar like `__advisor` that carries no `session_init` at
 //! all) is still a real agent: it appears from its own file's activity alone,
-//! with a generic `parent: main` (every child observed on this box sits
-//! directly under the root's own directory; a hypothetical nested spawn is
-//! out of scope — see `docs/omp-wire.md`).
+//! with a generic `parent: main` (every child observed sits directly under
+//! the root's own directory; a nested spawn is out of scope).
 //!
-//! **pi has no subagents.** `@earendil-works/pi-coding-agent` 0.84.4's
-//! `dist/core` and `dist/cli` contain zero references to a `subagent`
-//! concept (checked 2026-09-08), and zero sibling transcripts were found
-//! under any pi session directory on this box. So a pi session is exactly
-//! one file — a fact about the agent, not a gap in this measurement.
-//!
-//! Out of scope, and why: `<n>.bash.log`/`<n>.bash-original.log` beside a
-//! session directory are raw shell command output, not transcripts
-//! (confirmed: no `type`/JSONL shape). `<Name>.md` beside a spawned child is
-//! a written report artifact, also not a transcript. Neither is a
-//! `SessionFile` (`discovery::classify_path` only ever matches `.jsonl`).
+//! Out of scope, and why: `<n>.bash.log`, `<n>.read.log` and friends beside
+//! a session directory are raw tool output, not transcripts. `<Name>.md` and
+//! `<Name>.json` beside a spawned child are its written result, also not a
+//! transcript. Neither is a `SessionFile` (`discovery::classify_path` only
+//! ever matches `.jsonl`).
 
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 pub mod discovery;
 pub mod wire;
@@ -86,7 +84,9 @@ pub mod wire;
 use crate::fact::{AgentKind, AgentStatus, Fact, FactKind, Outcome, Statement};
 use crate::provider::summary::truncate_summary;
 use crate::state::session::MAIN_ID;
-use wire::{ContentBlock, Entry, MessageBody, UserMessage, is_spawn_tool, parse_line};
+use wire::{
+    ContentBlock, Entry, MessageBody, ToolExecutionStart, UserMessage, is_spawn_tool, parse_line,
+};
 
 /// One session file being read: the interactive root, or a spawned child's
 /// own transcript (omp only — see `super`). The only cross-line state this
@@ -100,7 +100,7 @@ pub struct Stream {
     /// child — the only name either side of a spawn agrees on (see `super`).
     owner: String,
     interactive: bool,
-    /// Root only: `"omp"` or `"pi"`, this build's label for who wrote it.
+    /// Root only: the agent type the main node is labelled with.
     agent_type: Option<&'static str>,
     announced: bool,
     last_ts: Option<DateTime<Utc>>,
@@ -111,11 +111,11 @@ pub struct Stream {
 }
 
 impl Stream {
-    pub fn new_root(agent_type: &'static str) -> Self {
+    pub fn new_root() -> Self {
         Stream {
             owner: MAIN_ID.to_string(),
             interactive: true,
-            agent_type: Some(agent_type),
+            agent_type: Some("omp"),
             announced: false,
             last_ts: None,
             seen_spawn_names: HashSet::new(),
@@ -240,12 +240,12 @@ impl Stream {
                 // "fallback"/"temporary" (measured) are a one-off override
                 // of a different slot — see `super`.
                 if mc.role.as_deref().is_none_or(|r| r == "default")
-                    && let Some(model) = mc.model()
+                    && let Some(model) = &mc.model
                 {
                     out.push(Fact {
                         agent: Some(owner.clone()),
                         ts: None,
-                        kind: FactKind::Model(model.to_string()),
+                        kind: FactKind::Model(model.clone()),
                     });
                 }
                 if mc.resolved_model_is_fallback == Some(true) {
@@ -253,20 +253,9 @@ impl Stream {
                 }
                 ensure_activity(&mut out, &owner);
             }
-            Entry::ThinkingLevelChange(tl) => {
-                if let Some(level) = non_empty(&tl.thinking_level) {
-                    out.push(session_row("thinking level", level));
-                }
-                ensure_activity(&mut out, &owner);
-            }
             Entry::TitleChange(tc) => {
                 if let Some(title) = non_empty(&tc.title) {
                     out.push(meta(FactKind::Title(title)));
-                }
-            }
-            Entry::CredentialPin(cp) => {
-                if let Some(provider) = non_empty(&cp.provider) {
-                    out.push(session_row("credential", provider));
                 }
             }
             Entry::Unknown => {}
@@ -385,6 +374,17 @@ impl Stream {
                         },
                     });
                 }
+                for child in r.task_progress() {
+                    if let Some(name) = non_empty(&child.id)
+                        && let Some(status) = child.status.as_deref().and_then(progress_status)
+                    {
+                        out.push(Fact {
+                            agent: Some(name),
+                            ts: None,
+                            kind: FactKind::Ended(status),
+                        });
+                    }
+                }
                 ensure_activity(out, &owner);
             }
             MessageBody::Unknown => {}
@@ -396,7 +396,7 @@ impl Stream {
     /// uses — see `super` for why this is a stated join, not a guess, and
     /// for the collision rule `seen_spawn_names` enforces.
     fn spawn_facts(&mut self, call: &str, arguments: &serde_json::Value, out: &mut Vec<Fact>) {
-        let Ok(parsed) = serde_json::from_value::<wire::TaskArguments>(arguments.clone()) else {
+        let Ok(parsed) = wire::TaskArguments::deserialize(arguments) else {
             return;
         };
         for item in parsed.tasks {
@@ -424,13 +424,30 @@ impl Stream {
     fn custom_facts(&mut self, c: &wire::CustomEntry, out: &mut Vec<Fact>) {
         let owner = self.owner.clone();
         match c.custom_type.as_deref() {
-            // Duplicates the toolCall that requested it — see `super`.
-            Some("tool_execution_start") => {}
+            Some("tool_execution_start") => {
+                if let Ok(start) = ToolExecutionStart::deserialize(&c.data)
+                    && let Some(call) = start.tool_call_id
+                {
+                    out.push(Fact {
+                        agent: Some(owner.clone()),
+                        ts: None,
+                        kind: FactKind::ToolStart {
+                            call,
+                            name: start.tool_name.unwrap_or_default(),
+                            summary: start
+                                .intent
+                                .as_deref()
+                                .map(truncate_summary)
+                                .filter(|s| !s.is_empty()),
+                        },
+                    });
+                }
+            }
             Some("session_exit") => {
                 // An interactive root's completion is unclaimable — see
                 // `super`. Only a spawned child's own exit is ground truth.
                 if !self.interactive
-                    && let Ok(exit) = serde_json::from_value::<wire::SessionExit>(c.data.clone())
+                    && let Ok(exit) = wire::SessionExit::deserialize(&c.data)
                     && let Some(status) = exit_status(exit.kind.as_deref())
                 {
                     out.push(Fact {
@@ -455,6 +472,17 @@ fn exit_status(kind: Option<&str>) -> Option<AgentStatus> {
         "normal" => Some(AgentStatus::Done),
         "signal" => Some(AgentStatus::Stopped),
         _ => Some(AgentStatus::Failed),
+    }
+}
+
+/// A `task` result's per-child `SubagentStatus` to a lifecycle status. Only
+/// the terminal values claim anything; `pending`/`running` are `None`.
+fn progress_status(status: &str) -> Option<AgentStatus> {
+    match status {
+        "completed" => Some(AgentStatus::Done),
+        "failed" => Some(AgentStatus::Failed),
+        "aborted" => Some(AgentStatus::Stopped),
+        _ => None,
     }
 }
 
@@ -483,9 +511,7 @@ fn entry_timestamp(entry: &Entry) -> Option<DateTime<Utc>> {
         Entry::Custom(c) => c.timestamp,
         Entry::CustomMessage(cm) => cm.timestamp,
         Entry::ModelChange(mc) => mc.timestamp,
-        Entry::ThinkingLevelChange(tl) => tl.timestamp,
         Entry::TitleChange(tc) => tc.timestamp,
-        Entry::CredentialPin(cp) => cp.timestamp,
         Entry::Unknown => None,
     }
 }
@@ -541,18 +567,17 @@ mod tests {
     /// not just the in-memory `Stream` the unit tests above drive directly.
     #[test]
     fn omp_demo_conforms() {
-        use crate::provider::Provider;
         let Some(dir) = crate::provider::harness::fixture_dir("omp") else {
             return;
         };
         let root_path =
             dir.join("2026-01-01T00-00-00-000Z_00000000-0000-7000-0000-000000000001.jsonl");
         let streams = move || -> Vec<Vec<Statement>> {
-            let root_file = discovery::session_file(Provider::Omp, &root_path).unwrap();
+            let root_file = discovery::session_file(&root_path).unwrap();
             discovery::related_paths(&root_file)
                 .into_iter()
                 .map(|path| {
-                    let file = discovery::session_file(Provider::Omp, &path).unwrap();
+                    let file = discovery::session_file(&path).unwrap();
                     let text = std::fs::read_to_string(&path).unwrap();
                     let mut stream = discovery::stream_for(&file);
                     text.lines().filter_map(|l| stream.push(l)).collect()
@@ -562,33 +587,16 @@ mod tests {
         crate::provider::harness::conform("omp", "demo", streams);
     }
 
-    /// The shipped pi fixture: one file, no children — pi has none to find
-    /// (see the module doc above).
-    #[test]
-    fn pi_demo_conforms() {
-        use crate::provider::Provider;
-        let Some(dir) = crate::provider::harness::fixture_dir("pi") else {
-            return;
-        };
-        let root_path =
-            dir.join("2026-01-01T00-00-00-000Z_00000000-0000-7c00-0000-000000000002.jsonl");
-        let streams = move || -> Vec<Vec<Statement>> {
-            let file = discovery::session_file(Provider::Pi, &root_path).unwrap();
-            let text = std::fs::read_to_string(&root_path).unwrap();
-            let mut stream = discovery::stream_for(&file);
-            vec![text.lines().filter_map(|l| stream.push(l)).collect()]
-        };
-        crate::provider::harness::conform("pi", "demo", streams);
-    }
-
     #[test]
     fn root_announces_main_as_interactive_with_its_provider_label() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
-            &[r#"{"type":"title","title":"","updatedAt":"2026-09-01T00:00:00Z","pad":""}"#,
-              r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-09-01T00:00:01Z","cwd":"/tmp"}"#,
-              r#"{"type":"message","id":"a","parentId":null,"timestamp":"2026-09-01T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"hello"}],"attribution":"user"}}"#],
+            &[
+                r#"{"type":"title","title":"","updatedAt":"2026-09-01T00:00:00Z","pad":""}"#,
+                r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-09-01T00:00:01Z","cwd":"/tmp"}"#,
+                r#"{"type":"message","id":"a","parentId":null,"timestamp":"2026-09-01T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"hello"}],"attribution":"user"}}"#,
+            ],
         );
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
         let agent = facts
@@ -618,7 +626,7 @@ mod tests {
 
     #[test]
     fn agent_attributed_user_turn_is_never_a_prompt() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
             &[
@@ -633,10 +641,12 @@ mod tests {
 
     #[test]
     fn custom_message_is_never_a_prompt_either() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
-            &[r#"{"type":"custom_message","id":"a","parentId":null,"timestamp":"2026-09-01T00:00:00Z","customType":"async-result","content":"result text","attribution":"agent"}"#],
+            &[
+                r#"{"type":"custom_message","id":"a","parentId":null,"timestamp":"2026-09-01T00:00:00Z","customType":"async-result","content":"result text","attribution":"agent"}"#,
+            ],
         );
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
         assert!(!facts.iter().any(|f| matches!(f.kind, FactKind::Prompt(_))));
@@ -645,7 +655,7 @@ mod tests {
 
     #[test]
     fn tool_call_pairs_with_its_result_and_uses_intent_as_summary() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
             &[
@@ -667,7 +677,7 @@ mod tests {
 
     #[test]
     fn task_spawn_registers_a_named_child_and_a_repeat_name_is_not_reclaimed() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let call = r#"{"type":"message","id":"a","parentId":null,"timestamp":"2026-09-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call1","name":"task","arguments":{"tasks":[{"name":"TickReviewer"}]},"intent":"fan out"}]}}"#;
         let stmts = push_all(&mut s, &[call]);
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
@@ -685,7 +695,11 @@ mod tests {
         let call2 = r#"{"type":"message","id":"c","parentId":"a","timestamp":"2026-09-01T00:01:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call2","name":"task","arguments":{"tasks":[{"name":"TickReviewer"}]},"intent":"fan out again"}]}}"#;
         let stmts2 = push_all(&mut s, &[call2]);
         let facts2: Vec<&Fact> = stmts2.iter().flat_map(|s| &s.facts).collect();
-        assert!(!facts2.iter().any(|f| matches!(f.kind, FactKind::Agent { .. })));
+        assert!(
+            !facts2
+                .iter()
+                .any(|f| matches!(f.kind, FactKind::Agent { .. }))
+        );
         // The Spawn fact itself is still stated — it is call-scoped, not
         // name-scoped, and always true regardless of the collision.
         assert!(
@@ -708,7 +722,10 @@ mod tests {
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
         let agent_facts: Vec<&Fact> = facts
             .iter()
-            .filter(|f| matches!(f.kind, FactKind::Agent { .. }) && f.agent.as_deref() == Some("TickReviewer"))
+            .filter(|f| {
+                matches!(f.kind, FactKind::Agent { .. })
+                    && f.agent.as_deref() == Some("TickReviewer")
+            })
             .copied()
             .collect();
         // Two Agent facts are stated for this one child — the generic birth
@@ -724,8 +741,12 @@ mod tests {
         assert!(agent_facts.iter().any(|f| matches!(&f.kind,
             FactKind::Agent { agent_type: Some(t), .. } if t == "reviewer"
         )));
-        assert!(facts.iter().any(|f| f.agent.as_deref() == Some("TickReviewer")
-            && f.kind == FactKind::Ended(AgentStatus::Done)));
+        assert!(
+            facts
+                .iter()
+                .any(|f| f.agent.as_deref() == Some("TickReviewer")
+                    && f.kind == FactKind::Ended(AgentStatus::Done))
+        );
     }
 
     #[test]
@@ -733,18 +754,26 @@ mod tests {
         let mut s = Stream::new_child("Orphan".to_string());
         let stmts = push_all(
             &mut s,
-            &[r#"{"type":"custom","id":"e","parentId":null,"timestamp":"2026-09-01T00:05:00Z","customType":"session_exit","data":{"reason":"sigterm","kind":"signal","recordedAt":"2026-09-01T00:05:00Z"}}"#],
+            &[
+                r#"{"type":"custom","id":"e","parentId":null,"timestamp":"2026-09-01T00:05:00Z","customType":"session_exit","data":{"reason":"sigterm","kind":"signal","recordedAt":"2026-09-01T00:05:00Z"}}"#,
+            ],
         );
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
-        assert!(facts.iter().any(|f| f.kind == FactKind::Ended(AgentStatus::Stopped)));
+        assert!(
+            facts
+                .iter()
+                .any(|f| f.kind == FactKind::Ended(AgentStatus::Stopped))
+        );
     }
 
     #[test]
     fn interactive_root_never_claims_completion_from_session_exit() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
-            &[r#"{"type":"custom","id":"e","parentId":null,"timestamp":"2026-09-01T00:05:00Z","customType":"session_exit","data":{"reason":"dispose","kind":"normal","recordedAt":"2026-09-01T00:05:00Z"}}"#],
+            &[
+                r#"{"type":"custom","id":"e","parentId":null,"timestamp":"2026-09-01T00:05:00Z","customType":"session_exit","data":{"reason":"dispose","kind":"normal","recordedAt":"2026-09-01T00:05:00Z"}}"#,
+            ],
         );
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
         assert!(!facts.iter().any(|f| matches!(f.kind, FactKind::Ended(_))));
@@ -752,7 +781,7 @@ mod tests {
 
     #[test]
     fn model_change_role_gates_which_slot_updates_the_agents_model() {
-        let mut s = Stream::new_root("omp");
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
             &[
@@ -772,13 +801,59 @@ mod tests {
     }
 
     #[test]
-    fn pi_model_change_reads_model_id_field() {
-        let mut s = Stream::new_root("pi");
+    fn task_result_ends_only_children_in_a_terminal_state() {
+        let mut s = Stream::new_root();
         let stmts = push_all(
             &mut s,
-            &[r#"{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-09-01T00:00:00Z","provider":"anthropic","modelId":"claude-opus-5"}"#],
+            &[
+                r#"{"type":"message","id":"r","parentId":"a","timestamp":"2026-09-01T00:02:00Z","message":{"role":"toolResult","toolCallId":"call1","toolName":"task","isError":false,"details":{"results":[],"progress":[{"index":0,"id":"Reviewer","status":"completed"},{"index":1,"id":"Helper","status":"pending"},{"index":2,"id":"Fixer","status":"failed"},{"index":3,"id":"Probe","status":"aborted"}]}}}"#,
+            ],
+        );
+        let ended: Vec<(&str, AgentStatus)> = stmts
+            .iter()
+            .flat_map(|s| &s.facts)
+            .filter_map(|f| match f.kind {
+                FactKind::Ended(status) => Some((f.agent.as_deref()?, status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ended,
+            vec![
+                ("Reviewer", AgentStatus::Done),
+                ("Fixer", AgentStatus::Failed),
+                ("Probe", AgentStatus::Stopped),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_execution_start_states_the_call_it_starts() {
+        let mut s = Stream::new_root();
+        let stmts = push_all(
+            &mut s,
+            &[
+                r#"{"type":"custom","customType":"tool_execution_start","data":{"toolCallId":"t9","toolName":"read","startedAt":"2026-09-01T00:00:00Z","args":{"path":"x"},"intent":"Reading x"},"id":"e","parentId":"d","timestamp":"2026-09-01T00:00:00Z"}"#,
+            ],
         );
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
-        assert!(facts.iter().any(|f| f.kind == FactKind::Model("claude-opus-5".into())));
+        assert!(facts.iter().any(|f| matches!(
+            &f.kind,
+            FactKind::ToolStart { call, name, summary }
+                if call == "t9" && name == "read" && summary.as_deref() == Some("Reading x")
+        )));
+    }
+
+    #[test]
+    fn bookkeeping_records_state_nothing() {
+        let mut s = Stream::new_root();
+        let stmts = push_all(
+            &mut s,
+            &[
+                r#"{"type":"credential_pin","id":"c","parentId":null,"timestamp":"2026-09-01T00:00:00Z","provider":"anthropic","hash":"h"}"#,
+                r#"{"type":"thinking_level_change","id":"t","parentId":"c","timestamp":"2026-09-01T00:00:01Z","thinkingLevel":"high","configured":"high"}"#,
+            ],
+        );
+        assert!(stmts.is_empty());
     }
 }

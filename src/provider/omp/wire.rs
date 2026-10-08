@@ -1,19 +1,6 @@
-//! The shared omp/pi wire format: the serde model for one JSONL record, and
-//! nothing else. What the records *mean* is [`super`]; where the files
-//! *live* is [`super::discovery`]. Measured directly against real
-//! transcripts on this box (40 omp sessions, 37 pi sessions) and cross-checked
-//! against the installed binaries (`omp` 0.2.0, `@earendil-works/pi-coding-agent`
-//! 0.84.4) — see the module doc in `super` for what that measurement found.
-//!
-//! pi is the base lineage; omp forked it and only ever ADDS fields and record
-//! types, never renames or removes one already in pi — every difference
-//! measured is additive, so one wire model serves both providers.
-//! omp-only pieces (`Title`, `SessionInit`, `Custom`, `CustomMessage`,
-//! `TitleChange`, `CredentialPin`, `SessionEntry::title`, `ModelChangeEntry::role`,
-//! `UserMessage::attribution`) are `Option`, empty, or simply never produced
-//! by pi. pi's own naming for a couple of fields pi predates omp on
-//! (`model_change.modelId`/`provider` vs omp's `model_change.model`) sits
-//! beside the omp field, also `Option`.
+//! The omp wire format: the serde model for one JSONL record, and nothing
+//! else. What the records *mean* is [`super`]; where the files *live* is
+//! [`super::discovery`]. Measured against real omp 18.8.4 transcripts.
 //!
 //! Defensive by design, like every provider here: an unknown record type, a
 //! missing field, or a malformed line parses to something skippable, never a
@@ -21,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use serde_json::Value;
 
 // ---------------------------------------------------------------------------
 // Top-level record
@@ -28,29 +16,27 @@ use serde::Deserialize;
 
 /// One parsed record line, dispatched on `type`.
 ///
-/// Six more top-level types are measured on this box (`compaction`,
-/// `branch_summary`, `model_usage`, `ttsr_injection`, `mode_change`,
-/// `reset_boundary` — at most 48 lines each across 177 omp sessions) but
-/// carry nothing this graph needs; they and any future type fall to
-/// [`Entry::Unknown`], same as an entry whose `type` this build has never
-/// seen.
+/// More top-level types are measured (`compaction`, `model_usage`,
+/// `ttsr_injection`, `mode_change`, `service_tier_change`,
+/// `thinking_level_change`, `credential_pin`) but carry nothing this graph
+/// needs; they and any future type fall to [`Entry::Unknown`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum Entry {
-    /// omp only, always line 1. omp rewrites this line in place as the title
-    /// changes (padded to a fixed byte width so a live tailer's later
-    /// offsets never shift); pi never writes it at all, which is why its
-    /// presence is *the* omp discriminator (see `super::provider_of`).
+    /// Always line 1. omp rewrites this line in place as the title changes
+    /// (padded to a fixed byte width so a live tailer's later offsets never
+    /// shift); its presence is *the* omp discriminator (see
+    /// `super::super::provider_of`).
     #[serde(rename = "title")]
     Title(TitleEntry),
 
-    /// The session root: line 1 on pi, line 2 on omp. Carries the session id
-    /// and `cwd`; omp additionally repeats the current title here.
+    /// The session root, line 2. Carries the session id and `cwd`, and
+    /// repeats the current title.
     #[serde(rename = "session")]
     Session(SessionEntry),
 
-    /// A spawned child's own root record (omp only — see `super`): which
-    /// role it was given and which model it resolved to.
+    /// A spawned child's own root record (see `super`): which role it was
+    /// given and which model it resolved to.
     #[serde(rename = "session_init")]
     SessionInit(SessionInitEntry),
 
@@ -58,14 +44,14 @@ pub enum Entry {
     #[serde(rename = "message")]
     Message(MessageEntry),
 
-    /// Runtime event keyed by `customType` (omp only, measured); see `super`
-    /// for what the two customTypes read here mean.
+    /// Runtime event keyed by `customType`; see `super` for what the
+    /// customTypes read here mean.
     #[serde(rename = "custom")]
     Custom(CustomEntry),
 
     /// Framework-injected text delivered as a turn but authored by nobody
-    /// (omp only, measured: `mid-run-todo-nudge`, `async-result`). Never a
-    /// human prompt, whatever its `customType` — see `super`.
+    /// (measured: `mid-run-todo-nudge`, `async-result`). Never a human
+    /// prompt, whatever its `customType` — see `super`.
     #[serde(rename = "custom_message")]
     CustomMessage(CustomMessageEntry),
 
@@ -73,18 +59,9 @@ pub enum Entry {
     #[serde(rename = "model_change")]
     ModelChange(ModelChangeEntry),
 
-    /// The agent's reasoning-effort level changed.
-    #[serde(rename = "thinking_level_change")]
-    ThinkingLevelChange(ThinkingLevelChangeEntry),
-
-    /// The session title changed after the header line (omp only, measured).
+    /// The session title changed after the header line.
     #[serde(rename = "title_change")]
     TitleChange(TitleChangeEntry),
-
-    /// Which provider a credential was pinned to. Session bookkeeping, not
-    /// agent activity (omp only, measured).
-    #[serde(rename = "credential_pin")]
-    CredentialPin(CredentialPinEntry),
 
     #[serde(other)]
     Unknown,
@@ -110,17 +87,17 @@ pub struct SessionEntry {
     pub timestamp: Option<DateTime<Utc>>,
     #[serde(default)]
     pub cwd: Option<String>,
-    /// omp only: the title as of session start. pi never writes it.
+    /// The title as of session start.
     #[serde(default)]
     pub title: Option<String>,
-    /// omp only: how that title was set (measured: observed only `null` on
-    /// this box, so surfaced but never asserted on beyond presence).
+    /// How that title was set (measured: only `null`, so surfaced but never
+    /// asserted on beyond presence).
     #[serde(rename = "titleSource", default)]
     pub title_source: Option<String>,
 }
 
-/// A spawned child's own root record (omp only — no nested spawn was ever
-/// observed on this box, but any is-a-child file gets this shape). `task`
+/// A spawned child's own root record (no nested spawn was ever observed, but
+/// any is-a-child file gets this shape). `task`
 /// and `systemPrompt` are measured (up to several KB of free text — the full
 /// work order, not a label) but never read: nothing in the fact vocabulary
 /// carries an agent's full prompt, and using it as a short `description`
@@ -167,11 +144,9 @@ pub enum MessageBody {
 pub struct UserMessage {
     #[serde(default)]
     pub content: Vec<ContentBlock>,
-    /// omp only. Absent on pi, where every `user` turn is treated as human —
-    /// pi has no measured synthetic same-role injection to rule out (see
-    /// `super`). `"user"` (or absent) is a person; measured on this box:
-    /// `"agent"` (the framework re-entering its own thread as a `user` turn)
-    /// is the only other value seen, never a person.
+    /// `"user"` (or absent) is a person; `"agent"` (the framework re-entering
+    /// its own thread as a `user` turn) is the only other value measured,
+    /// never a person.
     #[serde(default)]
     pub attribution: Option<String>,
     // steering (a human interjection mid-turn rather than between turns) is
@@ -181,9 +156,8 @@ pub struct UserMessage {
 }
 
 impl UserMessage {
-    /// Whether this turn is a person's own words: `attribution` absent (pi,
-    /// or an omp shape this build has not seen) or `"user"`. `"agent"` is
-    /// the one measured counter-example — never a person.
+    /// Whether this turn is a person's own words: `attribution` absent or
+    /// `"user"`. `"agent"` is the one measured counter-example — never a person.
     pub fn is_human(&self) -> bool {
         self.attribution.as_deref().is_none_or(|a| a == "user")
     }
@@ -198,9 +172,7 @@ pub struct AssistantMessage {
     #[serde(default)]
     pub usage: Option<Usage>,
     /// The provider's own id for this turn's response — the key repeated
-    /// cumulative usage shares, so it is the dedup key for [`Tokens`]
-    /// (measured: pi never writes it, so its usage is never deduped, which
-    /// is correct since pi has nothing to dedup against).
+    /// cumulative usage shares, so it is the dedup key for [`Tokens`].
     ///
     /// [`Tokens`]: crate::fact::FactKind::Tokens
     #[serde(rename = "responseId", default)]
@@ -221,11 +193,47 @@ pub struct Usage {
 pub struct ToolResultMessage {
     #[serde(rename = "toolCallId", default)]
     pub tool_call_id: Option<String>,
+    #[serde(rename = "toolName", default)]
+    pub tool_name: Option<String>,
     #[serde(rename = "isError", default)]
     pub is_error: Option<bool>,
-    // toolName/content/details are measured but not read: the pairing is by
-    // id, the outcome by isError; no fact in this vocabulary carries a tool
-    // result's own output text.
+    /// Each tool writes its own shape here, so it stays a plain [`Value`] and
+    /// is only read as [`TaskDetails`] when `tool_name` is the spawn tool.
+    #[serde(default)]
+    pub details: Value,
+}
+
+impl ToolResultMessage {
+    /// The per-child progress of a `task` result; empty for any other tool.
+    pub fn task_progress(&self) -> Vec<TaskProgress> {
+        if !self.tool_name.as_deref().is_some_and(is_spawn_tool) {
+            return Vec::new();
+        }
+        TaskDetails::deserialize(&self.details)
+            .map(|d| d.progress)
+            .unwrap_or_default()
+    }
+}
+
+/// `details` of a `task` tool result.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TaskDetails {
+    #[serde(default)]
+    pub progress: Vec<TaskProgress>,
+}
+
+/// One child's state in a `task` result. `id` is the child's name — its file
+/// stem. `status` is omp's `SubagentStatus`: `pending`, `running`,
+/// `completed`, `failed`, or `aborted`. A `task` call that runs its children
+/// in the background returns at once with every child `pending` (measured:
+/// every `task` result on this machine), so only the three terminal values
+/// say anything about the child.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TaskProgress {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// A content block inside `assistant`/`user` message content. An
@@ -297,16 +305,25 @@ pub struct CustomEntry {
     pub data: serde_json::Value,
 }
 
-/// `data` of a `session_exit` custom record — the one `customType` besides
-/// `tool_execution_start` this build reads past `CustomEntry::data`. Any
-/// other `customType` (measured: only those two on this box) is skipped
-/// with its `data` left as an opaque `Value`.
+/// `data` of a `session_exit` custom record.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SessionExit {
     /// Measured: `"normal"` (a clean exit), `"signal"` (sigterm/sighup — cut
     /// short externally), `"fatal"` (an unhandled rejection — a crash).
     #[serde(default)]
     pub kind: Option<String>,
+}
+
+/// `data` of a `tool_execution_start` custom record: the runtime starting a
+/// call the assistant turn above it already requested.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ToolExecutionStart {
+    #[serde(rename = "toolCallId", default)]
+    pub tool_call_id: Option<String>,
+    #[serde(rename = "toolName", default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub intent: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -319,44 +336,26 @@ pub struct CustomMessageEntry {
 }
 
 // ---------------------------------------------------------------------------
-// model_change / thinking_level_change / title_change / credential_pin
+// model_change / title_change
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ModelChangeEntry {
     #[serde(default)]
     pub timestamp: Option<DateTime<Utc>>,
-    /// omp's field name for the new model id.
+    /// The new model id.
     #[serde(default)]
     pub model: Option<String>,
-    /// pi's field name for the same thing.
-    #[serde(rename = "modelId", default)]
-    pub model_id: Option<String>,
-    /// omp only. Absent, or `"default"`, describes the agent's own running
+    /// Absent, or `"default"`, describes the agent's own running
     /// model; `"fallback"`/`"temporary"` (both measured) describe a
     /// one-off override of a different model slot, not this agent's
     /// standing model — see `super`.
     #[serde(default)]
     pub role: Option<String>,
-    /// omp only: this change resolved to a fallback because the requested
+    /// This change resolved to a fallback because the requested
     /// model was unavailable.
     #[serde(rename = "resolvedModelIsFallback", default)]
     pub resolved_model_is_fallback: Option<bool>,
-}
-
-impl ModelChangeEntry {
-    /// The new model id, whichever field this dialect used.
-    pub fn model(&self) -> Option<&str> {
-        self.model.as_deref().or(self.model_id.as_deref())
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ThinkingLevelChangeEntry {
-    #[serde(default)]
-    pub timestamp: Option<DateTime<Utc>>,
-    #[serde(rename = "thinkingLevel", default)]
-    pub thinking_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -369,16 +368,6 @@ pub struct TitleChangeEntry {
     // again here — the session-info row it would feed is already kept
     // current by the header, and re-stating it on every title change would
     // just flicker the same value.
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CredentialPinEntry {
-    #[serde(default)]
-    pub timestamp: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub provider: Option<String>,
-    // hash: measured, a credential fingerprint with no display purpose
-    // beyond confirming a pin happened.
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +398,10 @@ mod tests {
 
     #[test]
     fn unknown_type_and_malformed_lines_are_skippable() {
-        assert!(matches!(parse_line(r#"{"type":"future_thing"}"#), Some(Entry::Unknown)));
+        assert!(matches!(
+            parse_line(r#"{"type":"future_thing"}"#),
+            Some(Entry::Unknown)
+        ));
         assert!(parse_line("").is_none());
         assert!(parse_line("   ").is_none());
         assert!(parse_line("not json").is_none());
@@ -435,18 +427,31 @@ mod tests {
         assert!(!injected.is_human());
     }
 
+    /// `details` is tool-specific: a shape that would not parse as a `task`
+    /// result must not cost the line its `toolCallId`.
     #[test]
-    fn model_change_reads_either_dialect_field_name() {
-        let omp = ModelChangeEntry {
-            model: Some("anthropic/claude-opus-5".into()),
-            ..Default::default()
+    fn tool_result_details_are_read_only_for_task() {
+        let other = r#"{"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"read","details":{"progress":7}}}"#;
+        let Some(Entry::Message(m)) = parse_line(other) else {
+            panic!("a tool result with foreign details still parses");
         };
-        let pi = ModelChangeEntry {
-            model_id: Some("claude-opus-5".into()),
-            ..Default::default()
+        let Some(MessageBody::ToolResult(r)) = m.message else {
+            panic!("expected a tool result");
         };
-        assert_eq!(omp.model(), Some("anthropic/claude-opus-5"));
-        assert_eq!(pi.model(), Some("claude-opus-5"));
+        assert_eq!(r.tool_call_id.as_deref(), Some("c1"));
+        assert!(r.task_progress().is_empty());
+
+        let task = r#"{"type":"message","message":{"role":"toolResult","toolCallId":"c2","toolName":"task","details":{"results":[],"progress":[{"id":"Reviewer","status":"completed"},{"id":"Helper","status":"pending"}]}}}"#;
+        let Some(Entry::Message(m)) = parse_line(task) else {
+            panic!("expected a message entry");
+        };
+        let Some(MessageBody::ToolResult(r)) = m.message else {
+            panic!("expected a tool result");
+        };
+        let progress = r.task_progress();
+        assert_eq!(progress.len(), 2);
+        assert_eq!(progress[0].id.as_deref(), Some("Reviewer"));
+        assert_eq!(progress[0].status.as_deref(), Some("completed"));
     }
 
     #[test]
