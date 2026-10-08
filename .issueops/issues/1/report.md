@@ -1,12 +1,21 @@
 # Issue #1 implementation report
 
-Status: implement and ai-slop-clean done; docs, verify, and the draft PR follow
+~~~text
+Status: completed (draft PR published and verified; completion recorded with this report)
 Lifecycle: io-4b513b64dc69
 Mode/host/model: direct / omp / anthropic/claude-opus-5-5 (high)
-Worktree/branch: /Users/m16khb/Workspace/herdr-agents-graph.worktrees/1-agents-graph-mvp / 1-agents-graph-mvp
-Lease generation: 2 (taken over from generation 1 via replace + claim after the handoff)
-Issue/plan digests: plan.md 474d3f0b6c8c6f8e0c1e05ea3103cd0215f2f7b7c7dc615dda86916a7037e4d5 and handoff.md 08b7fe92… matched before claim
-
+Worktree/branch/final HEAD: /Users/m16khb/Workspace/herdr-agents-graph.worktrees/1-agents-graph-mvp / 1-agents-graph-mvp / the commit that adds this report (passed as --final-head)
+Lease generation/completion: generation 2 (replace + claim after the generation-1 handoff); completed by `issueops execution complete`
+Issue/packet digests: verified — plan.md 474d3f0b6c8c6f8e0c1e05ea3103cd0215f2f7b7c7dc615dda86916a7037e4d5 and handoff.md 08b7fe921d9ae1efa12222d6e54fbfbfb1003553f218cf6a4e24c78a231b9fc5 matched before claim
+Commits: listed below (base 526801f, first parent)
+Changed files: git diff 526801f..HEAD (fork import of zoetrope plus the files named in each commit below)
+Acceptance evidence: G1-G12 12/12 met (.issueops/issues/1/gates.md); T10 three-agent herdr QA (evidence/task-10-herdr-qa*.txt); intent check below
+Verification: cargo test --locked 239+13+1 PASS; clippy -D warnings PASS; cargo doc -D warnings PASS; --no-default-features PASS; real_sessions 3153/0 failed PASS; inspect over 3150 files 0 abnormal exits PASS; gates 12/12 PASS; implementation review round 2 PASS; cd.yml not run (needs a v* tag) SKIP
+AI-slop clean: removed the recording-only autopilot (476 lines), narrowed EXIT_UNRESOLVED, corrected the README release claim
+Draft PR/MR: https://github.com/m16khb-org/herdr-agents-graph/pull/2 (draft, open, head 1-agents-graph-mvp, base main, label enhancement, assignee m16khb, closes #1; verified with remote verify-artifact)
+Deviations: see "Deviations from the plan" below
+Blockers: none
+~~~
 ## Commits (first parent, base 526801f)
 
 - 195dbb8 chore(fork): import furkankly/zoetrope@b1f31dd
@@ -26,6 +35,12 @@ Issue/plan digests: plan.md 474d3f0b6c8c6f8e0c1e05ea3103cd0215f2f7b7c7dc615dda86
 - 00815ad fix(herdr): draw the pane the action was invoked for (found in T10)
 - 8cc2ad3 chore(issueops): aim herdr QA at its own panes through the socket
 - 96bb59d chore(issueops): record G1-G12 evidence for issue #1
+- e4a081c chore(issueops): draft the implementation report for issue #1
+- bd7f035 refactor(ui): drop the recording-only autopilot
+- 16081ca fix(tailer): keep complete lines longer than 8 MiB in chunked tail reads (review round 1)
+- c0a5bf3 fix(herdr): keep the open-pane record until the pane is closed (review round 1)
+- cf5f646 docs: say that no release exists before v0.1.0
+- 90a927a chore(issueops): record the review round, cautions, and gate evidence
 
 Every intermediate commit from bdd5f36 to 3d32d33 was compiled on its own
 (`cargo test --locked --all-targets --no-run` in a clean export): all rc=0.
