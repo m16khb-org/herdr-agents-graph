@@ -14,3 +14,6 @@ subject_not_punctuated = true
 line_length = 0
 # disable subject length
 subject_length = 0
+# build (release tooling) and ci (workflows) are also commit types here;
+# cliff.toml files both under Miscellaneous Tasks.
+allowed_types = ["fix", "feat", "chore", "docs", "style", "refactor", "perf", "test", "build", "ci"]

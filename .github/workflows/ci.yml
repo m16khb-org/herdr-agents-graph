@@ -133,7 +133,22 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: crate-ci/committed@master
+      # The fork import brings zoetrope's history, which predates this
+      # repository's commit policy. While a PR's base does not yet contain the
+      # upstream tip it forked from, lint from that tip instead of the base.
+      - name: Choose the commit range
+        id: range
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          UPSTREAM_TIP: b1f31dd26bd4e9e513885e39edb78d0850a5d1fe
+        run: |
+          from="$BASE"
+          if git merge-base --is-ancestor "$UPSTREAM_TIP" "$HEAD" && ! git merge-base --is-ancestor "$UPSTREAM_TIP" "$BASE"; then
+            from="$UPSTREAM_TIP"
+          fi
+          echo "commits=$from..$HEAD" >> "$GITHUB_OUTPUT"
+      - uses: crate-ci/committed@v1.1.11
         with:
           args: "-vv"
-          commits: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+          commits: ${{ steps.range.outputs.commits }}
