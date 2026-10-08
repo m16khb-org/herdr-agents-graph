@@ -167,7 +167,7 @@ mod tests {
         use std::io::Write;
 
         let mut dir = std::env::temp_dir();
-        dir.push(format!("zoetrope_replay_order_{}", std::process::id()));
+        dir.push(format!("agents_graph_replay_order_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let session = "22222222-2222-2222-2222-222222222222";
         let sub_dir = dir.join(session).join("subagents");

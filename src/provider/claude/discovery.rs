@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn scan_missing_dir_is_empty_not_error() {
         // Lazily-created dirs: scanning a nonexistent path is a no-op.
-        let missing = Path::new("/definitely/not/a/real/zoetrope/subagents/xyz");
+        let missing = Path::new("/definitely/not/a/real/agents-graph/subagents/xyz");
         assert!(scan_subagent_files(missing, None).is_empty());
         assert!(scan_workflow_ids(missing).is_empty());
     }
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn scan_subagent_files_pairs_transcript_and_meta() {
         let tmp = std::env::temp_dir().join(format!(
-            "zoetrope-scan-{}-{}",
+            "agents_graph-scan-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

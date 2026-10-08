@@ -15,8 +15,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Session, Spec};
-use zoetrope::state::{App, Mode};
-use zoetrope::tailer::UiEvent;
+use agents_graph::state::{App, Mode};
+use agents_graph::tailer::UiEvent;
 
 /// Bytes currently allocated and not yet freed.
 static LIVE: AtomicUsize = AtomicUsize::new(0);

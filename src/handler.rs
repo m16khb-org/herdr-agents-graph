@@ -191,11 +191,11 @@ fn handle_key(key: &KeyEvent, app: &mut App) -> bool {
     // destructive/stateful library bindings — Delete/Backspace removes the
     // selected node (re-added on the next sync with a layout jump), 'i'
     // silently toggles the viewport lock, 'm' toggles multi-select — none of
-    // which zoetrope surfaces or wants.
+    // which this app surfaces or wants.
     let response = match key.code {
         // Selection navigation: sequential + spatial. The flow is configured with
         // `SelectionReveal::None` (see `graph::new_flow`), so selection changes
-        // without the library moving the camera — zoetrope's center-glide
+        // without the library moving the camera — the app's own center-glide
         // (pending_center → center_node) is the sole, smooth camera move.
         KeyCode::Tab
         | KeyCode::BackTab
@@ -398,7 +398,7 @@ mod tests {
         let before = (app.flow.viewport.x, app.flow.viewport.y);
 
         // Tab to "b": the flow is `SelectionReveal::None`, so the selection moves
-        // WITHOUT the library touching the camera — zoetrope's center-glide (queued
+        // WITHOUT the library touching the camera — the app's own center-glide (queued
         // via pending_center) is the sole, smooth camera move.
         handle_event(
             &Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),

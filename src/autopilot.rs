@@ -1,7 +1,7 @@
 //! A scripted mouse pointer, for recordings only.
 //!
 //! VHS (which records the demo GIFs) is keyboard-only, and it films a headless
-//! terminal where no OS pointer exists to film. So zoetrope's mouse-driven
+//! terminal where no OS pointer exists to film. So this app's mouse-driven
 //! features — drag-to-pan, wheel-zoom around the cursor, and dragging the
 //! scrubber to seek — cannot be captured directly at all. The keyboard demo in
 //! `assets/demo.tape` shows everything reachable by key; this closes the rest.

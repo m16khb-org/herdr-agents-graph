@@ -1,23 +1,13 @@
-// The mark, in the docs.rs sidebar and its tab. Absolute URLs because rustdoc
-// does not copy local files into the generated output — docs.rs would serve a
-// dead link to a path that only exists in this checkout.
-#![doc(
-    html_logo_url = "https://raw.githubusercontent.com/furkankly/zoetrope/main/assets/icon.svg",
-    html_favicon_url = "https://raw.githubusercontent.com/furkankly/zoetrope/main/assets/icon.svg"
-)]
-// The README is the crate's front page on docs.rs as well as on crates.io: this
-// is an application, so what a reader needs first is what zoetrope does, not the
-// module list. Its images use absolute URLs for the same reason the logo above
-// does. What follows is the part that only concerns someone depending on the
+// The README is the crate's front page: this is an application, so what a
+// reader needs first is what the plugin does, not the module list. What
+// follows is the part that only concerns someone depending on the
 // library rather than running the binary.
 #![doc = include_str!("../README.md")]
 //!
 //! ## The library
 //!
-//! The portable core behind both the native frontend
-//! (the `zoe` terminal app, `src/main.rs`) and the browser frontend (the
-//! `zoetrope-web` crate at `web/wasm/`, which depends on this one with default
-//! features off).
+//! The portable core behind the `agents-graph` terminal app (`src/main.rs`).
+//! With default features off it builds without tokio, crossterm, or any IO.
 //!
 //! Portable everywhere: the domain [`state`] (model + unified replay/live
 //! [`timeline`](state::Timeline) + flow-graph projection), the [`ui`] rendering,
@@ -36,7 +26,7 @@ pub mod ui;
 // The native frontend: terminal loop + crossterm input.
 //
 // Frontend plumbing, with no stability promise. These are public because the
-// `zoe` binary is a separate crate that links this one, not because they are an
+// `agents-graph` binary is a separate crate that links this one, not because they are an
 // interface to build on: they may change shape in any release. The parts meant
 // to be depended on are the domain and the vocabulary above.
 #[cfg(feature = "native")]

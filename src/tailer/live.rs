@@ -449,7 +449,7 @@ mod tests {
     /// A temp Claude-shaped session: `<dir>/<uuid>.jsonl` with `main_lines`.
     fn claude_session(tag: &str, uuid: &str, main_lines: &str) -> (PathBuf, PathBuf) {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("zoetrope_{tag}_{}", std::process::id()));
+        dir.push(format!("agents_graph_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join(format!("{uuid}.jsonl"));
@@ -462,7 +462,7 @@ mod tests {
         use std::io::Write;
 
         let mut dir = std::env::temp_dir();
-        dir.push(format!("zoetrope_meta_retry_{}", std::process::id()));
+        dir.push(format!("agents_graph_meta_retry_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let sub_dir = dir
             .join("66666666-6666-6666-6666-666666666666")
@@ -588,7 +588,7 @@ mod tests {
             "cli-0.153.4/2026/09/07/rollout-2026-09-07T16-25-14-01a07c0b-5e16-70f2-ad21-7c2a3a228b22.jsonl",
         );
         let mut dir = std::env::temp_dir();
-        dir.push(format!("zoetrope_codex_seed_{}", std::process::id()));
+        dir.push(format!("agents_graph_codex_seed_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let day = dir.join("sessions/2026/09/07");
         std::fs::create_dir_all(&day).unwrap();

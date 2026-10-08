@@ -13,17 +13,17 @@ use super::session::{AgentInfo, AgentKind, AgentStatus, SessionModel};
 use crate::ui::edges::AgentEdge;
 use crate::ui::nodes::{AgentNode, MAIN_NODE_DIMS, SUB_NODE_DIMS};
 
-/// The concrete `Flow` type zoetrope uses: agent-card nodes, step-routed parent
+/// The concrete `Flow` type the app uses: agent-card nodes, step-routed parent
 /// edges (no labels — liveness reads from color alone).
 pub type AgentFlow = Flow<AgentNode, AgentEdge>;
 
-/// Build an empty, fully-configured `Flow` for zoetrope.
+/// Build an empty, fully-configured `Flow` for the app.
 ///
 /// Config: `with_deselect_on_pane_click(false)`, `deselect_on_drag = false`
 /// (detail panel persists), `with_min_zoom(0.1)` (Sugiyama trees outgrow the
 /// default fit-view limit). Hidden source/target handles for a clean look.
 pub fn new_flow() -> AgentFlow {
-    // zoetrope identity palette: stock dark base, but `accent` becomes GOLD —
+    // Identity palette: stock dark base, but `accent` becomes GOLD —
     // selection highlights, done medals, the REPLAY badge. Green stays
     // exclusively "alive" (status), red "failed". Every surface resolves from
     // flow.theme, so this one assignment brands the whole app.
@@ -184,7 +184,7 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
         // animation — probing via `edge_content_mut` first avoids building a
         // throwaway Edge (three String clones) per agent per sync only for
         // `add_edge` to reject it as a duplicate. Edges carry no selectable
-        // meaning in zoetrope (no edge panel), and a stray edge click would pin
+        // meaning here (no edge panel), and a stray edge click would pin
         // Follow mode while closing the node panel — a dead state. Fully inert:
         // not selectable, deletable, or reconnectable. Liveness shows as the
         // running color + marching ants, NOT a label — the current tool already

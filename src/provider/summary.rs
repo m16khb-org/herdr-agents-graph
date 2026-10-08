@@ -29,7 +29,7 @@ pub(crate) fn short_path(path: &str, cwd: Option<&str>) -> String {
         .and_then(|c| path.strip_prefix(c).map(|r| (c, r)))
         // Only a match at a path-component boundary counts: without this a
         // SIBLING dir sharing the cwd as a string prefix is mangled
-        // (cwd `…/zoetrope` + path `…/zoetrope-web/src/app.rs` → `-web/src/app.rs`).
+        // (cwd `…/app` + path `…/app-web/src/app.rs` → `-web/src/app.rs`).
         .filter(|(c, r)| r.starts_with('/') || c.ends_with('/'))
         .map(|(_, r)| r.trim_start_matches('/'))
         .filter(|r| !r.is_empty())
@@ -52,8 +52,8 @@ mod tests {
     fn short_path_strips_cwd_only_at_a_component_boundary() {
         assert_eq!(
             short_path(
-                "/Users/me/projects/zoetrope/src/a.rs",
-                Some("/Users/me/projects/zoetrope")
+                "/Users/me/projects/app/src/a.rs",
+                Some("/Users/me/projects/app")
             ),
             "src/a.rs"
         );
@@ -61,10 +61,10 @@ mod tests {
         // into a fake relative path ("-web/src/a.rs").
         assert_eq!(
             short_path(
-                "/Users/me/projects/zoetrope-web/src/a.rs",
-                Some("/Users/me/projects/zoetrope")
+                "/Users/me/projects/app-web/src/a.rs",
+                Some("/Users/me/projects/app")
             ),
-            "/Users/me/projects/zoetrope-web/src/a.rs"
+            "/Users/me/projects/app-web/src/a.rs"
         );
         assert_eq!(short_path("/project/x.rs", Some("/proj")), "/project/x.rs");
         // A trailing-slash cwd still relativizes.

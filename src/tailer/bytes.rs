@@ -250,7 +250,7 @@ mod tests {
         use std::io::Write;
 
         let mut tmp = std::env::temp_dir();
-        tmp.push(format!("zoetrope_tail_test_{}.jsonl", std::process::id()));
+        tmp.push(format!("agents_graph_tail_test_{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         let mut state = TailState::default();
@@ -295,7 +295,7 @@ mod tests {
         use std::io::Write;
 
         let mut tmp = std::env::temp_dir();
-        tmp.push(format!("zoetrope_trunc_test_{}.jsonl", std::process::id()));
+        tmp.push(format!("agents_graph_trunc_test_{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         let mut state = TailState::default();
@@ -335,9 +335,9 @@ mod tests {
         use std::io::Write;
 
         let mut tmp = std::env::temp_dir();
-        tmp.push(format!("zoetrope_rotate_test_{}.jsonl", std::process::id()));
+        tmp.push(format!("agents_graph_rotate_test_{}.jsonl", std::process::id()));
         let mut incoming = std::env::temp_dir();
-        incoming.push(format!("zoetrope_rotate_new_{}.jsonl", std::process::id()));
+        incoming.push(format!("agents_graph_rotate_new_{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(&incoming);
 
@@ -378,7 +378,7 @@ mod tests {
 
         let mut tmp = std::env::temp_dir();
         tmp.push(format!(
-            "zoetrope_overflow_test_{}.jsonl",
+            "agents_graph_overflow_test_{}.jsonl",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&tmp);

@@ -1,39 +1,20 @@
-[workspace]
-# The browser frontend (`zoetrope-web`, in web/wasm/) is deliberately NOT a
-# member: it can only be *compiled* for wasm32, not merely targeted at it.
-# rataflow gates its ratzilla `From` impls on
-# `all(feature = "ratzilla", target_arch = "wasm32")`, so a host-target check of
-# that crate fails to typecheck. As a member it would be host-checked by
-# `cargo check --workspace` and, more to the point, by rust-analyzer — which
-# would sit on two permanent phantom errors in the editor. Excluding it makes it
-# resolve as its own workspace (see the `[workspace]` table in its manifest),
-# with its own lockfile and target dir. Build it with trunk
-# (`web/scripts/build-wasm.sh`).
-exclude = ["web/wasm"]
-
 [package]
-name = "zoetrope"
-version = "0.2.0"
+name = "herdr-agents-graph"
+version = "0.1.0"
 edition = "2024"
 # Inherited from ratatui 0.30, which is the floor: nothing in this crate's own
 # source needs anything newer. Verified by the `msrv` job in CI.
 rust-version = "1.88"
-description = "Terminal UI that visualizes Claude Code and Codex agent sessions as a live flow graph."
+description = "Herdr plugin and terminal UI that draws Claude Code, Codex, and omp agent sessions as a live flow graph."
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/furkankly/zoetrope"
-homepage = "https://zoetrope.furkankly.dev"
-documentation = "https://zoetrope.furkankly.dev"
-keywords = ["claude-code", "codex", "tui", "agents", "visualization"]
+repository = "https://github.com/m16khb-org/herdr-agents-graph"
+keywords = ["claude-code", "codex", "omp", "herdr", "agents"]
 categories = ["command-line-utilities", "development-tools", "visualization"]
 # An allow-list, not a deny-list: state what the crate ships and everything else
-# stays out by default. The inverse leaks — anything added to the repo later
-# (recordings, web fonts, an OG image) silently ends up in the tarball until
-# someone audits it. Nothing here is compiled in: `assets/` belongs to the site
-# and the browser frontend (which is what `include_str!`s the demo fixture), and
-# the GIFs and tapes are ~5MB of recordings this crate never reads.
-# Cargo adds Cargo.toml and Cargo.lock on its own.
-include = ["/src/**/*.rs", "/README.md", "/LICENSE"]
+# stays out by default. Nothing under `assets/` is compiled in; the fixtures there
+# are read by tests only. Cargo adds Cargo.toml and Cargo.lock on its own.
+include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/NOTICE"]
 
 [features]
 default = ["native"]
@@ -42,7 +23,7 @@ default = ["native"]
 # (`default-features = false`) for the portable core alone — the model, the
 # timeline, the graph projection, the UI rendering and the providers, with
 # no runtime and no IO of its own (discovery touches the disk only when a
-# feeder asks it to). That is what the browser frontend (`zoetrope-web`) depends on.
+# feeder asks it to).
 native = [
   "dep:tokio",
   "dep:crossterm",
@@ -97,9 +78,11 @@ imbl = "7.0.1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 chrono = { version = "0.4", features = ["wasmbind"] }
 
+[lib]
+name = "agents_graph"
+
 [[bin]]
-# The crate is `zoetrope`; the command you type is `zoe`.
-name = "zoe"
+name = "agents-graph"
 path = "src/main.rs"
 # Native terminal binary — skipped by a `--no-default-features` build.
 required-features = ["native"]

@@ -175,12 +175,12 @@ impl Session {
     pub fn load(
         &self,
     ) -> (
-        Vec<zoetrope::tailer::ReplayItem>,
-        zoetrope::state::SessionInfo,
+        Vec<agents_graph::tailer::ReplayItem>,
+        agents_graph::state::SessionInfo,
     ) {
         let files = self.files();
         let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), *t)).collect();
-        let (_, items, info) = zoetrope::tailer::Bundle::load(&borrowed).expect("a session");
+        let (_, items, info) = agents_graph::tailer::Bundle::load(&borrowed).expect("a session");
         (items, info)
     }
 }

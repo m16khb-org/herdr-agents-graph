@@ -1,16 +1,16 @@
-//! zoetrope — visualize coding-agent sessions as a live flow graph.
+//! agents-graph — visualize coding-agent sessions as a live flow graph.
 //!
 //! CLI (hand-rolled over `std::env::args`, no clap):
 //!
 //! ```text
-//! zoe                       follow the current project's live session
-//! zoe <file.jsonl>          replay a recording, played from the start
-//! zoe <id>                  replay a session by id (or a unique prefix)
-//! zoe <dir>                 follow another project's live session
-//! zoe <file> --follow       follow a file's live edge instead of replaying
-//! zoe <file> --speed N      playback speed multiplier (default 8.0)
-//! zoe --provider <name> ... force the transcript format instead of detecting it
-//! zoe inspect <file|id|dir> headless: print the session tree + info
+//! agents-graph                       follow the current project's live session
+//! agents-graph <file.jsonl>          replay a recording, played from the start
+//! agents-graph <id>                  replay a session by id (or a unique prefix)
+//! agents-graph <dir>                 follow another project's live session
+//! agents-graph <file> --follow       follow a file's live edge instead of replaying
+//! agents-graph <file> --speed N      playback speed multiplier (default 8.0)
+//! agents-graph --provider <name> ... force the transcript format instead of detecting it
+//! agents-graph inspect <file|id|dir> headless: print the session tree + info
 //! ```
 
 use std::path::PathBuf;
@@ -18,11 +18,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::mpsc;
 
-use zoetrope::provider::{Provider, ReadMode, Target, open};
-use zoetrope::state::session::SessionModel;
-use zoetrope::state::{App, Mode};
-use zoetrope::tailer::{TailRequest, UiEvent};
-use zoetrope::{tailer, tui};
+use agents_graph::provider::{Provider, ReadMode, Target, open};
+use agents_graph::state::session::SessionModel;
+use agents_graph::state::{App, Mode};
+use agents_graph::tailer::{TailRequest, UiEvent};
+use agents_graph::{tailer, tui};
 
 /// Channel capacity for the bounded request/event channels.
 const CHANNEL_CAP: usize = 32;
@@ -57,18 +57,18 @@ pub enum Cli {
 const DEFAULT_REPLAY_SPEED: f64 = 8.0;
 
 const USAGE: &str = "\
-zoetrope — visualize coding-agent sessions as a flow graph
+agents-graph — visualize coding-agent sessions as a flow graph
 
 USAGE:
-    zoe                     follow the current project's live session
-    zoe <file.jsonl>        replay a recording, played from the start
-    zoe <id>                replay a session by id, or a unique prefix of one
-    zoe <dir>               follow another project's live session
-    zoe <file> --follow     follow a file's live edge instead of replaying
-    zoe <file> --speed N    playback speed (default 8.0)
-    zoe --provider <name>   force the format (claude, codex) instead of detecting it
-    zoe inspect <file|id>   headless: print the session tree + info
-    zoe --version           print the version and exit
+    agents-graph                     follow the current project's live session
+    agents-graph <file.jsonl>        replay a recording, played from the start
+    agents-graph <id>                replay a session by id, or a unique prefix of one
+    agents-graph <dir>               follow another project's live session
+    agents-graph <file> --follow     follow a file's live edge instead of replaying
+    agents-graph <file> --speed N    playback speed (default 8.0)
+    agents-graph --provider <name>   force the format (claude, codex) instead of detecting it
+    agents-graph inspect <file|id>   headless: print the session tree + info
+    agents-graph --version           print the version and exit
 
 Once open, scrub/follow/pause/go-live are available no matter how you launched.";
 
@@ -120,10 +120,10 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli> {
                 println!("{USAGE}");
                 std::process::exit(0);
             }
-            // Packaging depends on this: the Homebrew formula's `test do`
-            // block runs `zoe --version`, and it has to exit 0.
+            // The installer runs `agents-graph --version` to skip a reinstall of
+            // the same version, so this has to exit 0.
             "-V" | "--version" => {
-                println!("zoe {}", env!("CARGO_PKG_VERSION"));
+                println!("agents-graph {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--follow" => follow = true,
@@ -160,17 +160,17 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli> {
 }
 
 /// Fully parse a session, every file of it, into a [`SessionModel`] and its
-/// [`SessionInfo`](zoetrope::state::SessionInfo). Shared by `inspect`; the
+/// [`SessionInfo`](agents_graph::state::SessionInfo). Shared by `inspect`; the
 /// live/replay path uses the tailer instead.
 fn parse_session_fully(
     target: &Target,
     only: Option<Provider>,
-) -> Result<(SessionModel, zoetrope::state::SessionInfo)> {
+) -> Result<(SessionModel, agents_graph::state::SessionInfo)> {
     let session = open(target, only)?;
     let mut model = SessionModel::new(session.id.clone());
-    let mut info = zoetrope::state::SessionInfo::default();
+    let mut info = agents_graph::state::SessionInfo::default();
     let p = session.provider;
-    let mut apply = |mut statement: zoetrope::fact::Statement| {
+    let mut apply = |mut statement: agents_graph::fact::Statement| {
         for f in statement.take_session_meta() {
             info.apply(&f);
         }
@@ -216,7 +216,7 @@ fn parse_session_fully(
 async fn run_inspect(target: String, provider: Option<Provider>) -> Result<()> {
     let target = resolve_target(target)?;
     let (model, info) = parse_session_fully(&target, provider)?;
-    print!("{}", zoetrope::state::render::report(&model, &info));
+    print!("{}", agents_graph::state::render::report(&model, &info));
     Ok(())
 }
 
@@ -285,7 +285,7 @@ async fn run_tui(cli: Cli) -> Result<()> {
 /// What a positional argument means: an existing file is a session's file, an
 /// existing directory is a project to follow, anything shaped like a path
 /// that does not exist is a typo, and the rest is a session id or a prefix
-/// of one. Shared by `zoe <target>` and `zoe inspect <target>`.
+/// of one. Shared by `agents-graph <target>` and `agents-graph inspect <target>`.
 fn resolve_target(arg: String) -> Result<Target> {
     let path = PathBuf::from(&arg);
     if path.is_file() {
@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
     // Sleep has to be at least this long or the recording cuts mid-gesture, and
     // that number used to be copied into the tape by hand.
     if std::env::var("ZOETROPE_DEMO").as_deref() == Ok("duration") {
-        println!("{:.2}", zoetrope::autopilot::tour_secs());
+        println!("{:.2}", agents_graph::autopilot::tour_secs());
         return Ok(());
     }
 
@@ -321,11 +321,11 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zoetrope::state::session::AgentStatus;
+    use agents_graph::state::session::AgentStatus;
 
     fn cli(args: &[&str]) -> Result<Cli> {
         // parse_cli skips argv[0], so prepend a fake program name.
-        let mut v = vec!["zoe".to_string()];
+        let mut v = vec!["agents-graph".to_string()];
         v.extend(args.iter().map(|s| s.to_string()));
         parse_cli(v.into_iter())
     }
@@ -461,7 +461,7 @@ mod tests {
         // Inspect is a point-in-time view: a transcript whose last activity is
         // far in the past reports main as Idle (interactive agents never claim
         // completion — the format has no end marker to prove it).
-        let dir = std::env::temp_dir().join(format!("zoetrope-fullparse-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("agents_graph-fullparse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let tmp = dir.join("77777777-7777-7777-7777-777777777777.jsonl");
@@ -472,7 +472,7 @@ mod tests {
         .unwrap();
 
         let (model, _info) = parse_session_fully(&Target::Path(tmp.clone()), None).expect("parses");
-        let main = model.agent(zoetrope::state::session::MAIN_ID).unwrap();
+        let main = model.agent(agents_graph::state::session::MAIN_ID).unwrap();
         assert_eq!(main.status, AgentStatus::Idle);
         // The root's name comes from the provider now, not the model.
         assert_eq!(main.agent_type.as_deref(), Some("claude"));

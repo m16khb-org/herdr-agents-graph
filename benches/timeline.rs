@@ -18,15 +18,15 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use common::{Session, Spec};
-use zoetrope::provider::{FileRole, Provider, ReadMode, SessionFile};
-use zoetrope::state::session::SessionModel;
-use zoetrope::state::{App, Mode};
-use zoetrope::tailer::{ReplayItem, UiEvent};
+use agents_graph::provider::{FileRole, Provider, ReadMode, SessionFile};
+use agents_graph::state::session::SessionModel;
+use agents_graph::state::{App, Mode};
+use agents_graph::tailer::{ReplayItem, UiEvent};
 
 /// A parser for a session's root file, the way a feeder gets one: state what
 /// the file is, then ask its provider. Reading through `Stream` rather than the
 /// wire parser is what production does, and keeps the bench on the public API.
-fn root_stream() -> zoetrope::provider::Stream {
+fn root_stream() -> agents_graph::provider::Stream {
     Provider::Claude.stream_for(&SessionFile {
         provider: Provider::Claude,
         path: std::path::PathBuf::from("bench.jsonl"),

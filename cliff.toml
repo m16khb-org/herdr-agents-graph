@@ -1,15 +1,13 @@
 # configuration for https://github.com/orhun/git-cliff
 
 [remote.github]
-owner = "furkankly"
-repo = "zoetrope"
+owner = "m16khb-org"
+repo = "herdr-agents-graph"
 
 [changelog]
 # changelog header
 header = """
-<img src="https://raw.githubusercontent.com/furkankly/zoetrope/main/assets/zoetrope.svg" width="300" />
-
-[**zoetrope**](https://zoetrope.furkankly.dev): Watch a Claude Code or Codex session as a live flow graph, in your terminal — or your browser.\n
+**herdr-agents-graph**: watch a Claude Code, Codex, or omp session as a live flow graph inside herdr.\n
 """
 # template for the changelog body
 # https://keats.github.io/tera/docs/#introduction
