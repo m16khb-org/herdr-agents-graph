@@ -17,11 +17,11 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use std::hint::black_box;
 use std::time::Duration;
 
-use common::{Session, Spec};
 use agents_graph::provider::{FileRole, Provider, ReadMode, SessionFile};
 use agents_graph::state::session::SessionModel;
 use agents_graph::state::{App, Mode};
 use agents_graph::tailer::{ReplayItem, UiEvent};
+use common::{Session, Spec};
 
 /// A parser for a session's root file, the way a feeder gets one: state what
 /// the file is, then ask its provider. Reading through `Stream` rather than the

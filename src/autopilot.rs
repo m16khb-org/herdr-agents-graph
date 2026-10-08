@@ -17,7 +17,7 @@
 //! all run for real. Animating the camera or the playhead directly would look
 //! superficially similar and demonstrate nothing.
 //!
-//! Demo scaffolding, gated by the caller behind `ZOETROPE_DEMO=1`. Nothing here
+//! Demo scaffolding, gated by the caller behind `AGENTS_GRAPH_DEMO=1`. Nothing here
 //! runs for a real user.
 
 use std::time::Duration;
@@ -364,7 +364,7 @@ pub fn tour_steps(m: TourMarks) -> Vec<Step> {
 ///
 /// The marks do not affect timing — only the `secs` and `Dwell` values do — so
 /// this answers without an app, a layout or a terminal. That is what lets
-/// `ZOETROPE_DEMO=duration` print it before the TUI starts.
+/// `AGENTS_GRAPH_DEMO=duration` print it before the TUI starts.
 pub fn tour_secs() -> f64 {
     duration(&tour_steps(TourMarks::default()))
 }
@@ -464,9 +464,9 @@ pub fn is_trigger(event: &Event) -> bool {
         if k.kind == KeyEventKind::Press && k.code == KeyCode::Char('t'))
 }
 
-/// Whether a recording run was requested (`ZOETROPE_DEMO=1`).
+/// Whether a recording run was requested (`AGENTS_GRAPH_DEMO=1`).
 pub fn requested() -> bool {
-    std::env::var("ZOETROPE_DEMO").is_ok_and(|v| v == "1")
+    std::env::var("AGENTS_GRAPH_DEMO").is_ok_and(|v| v == "1")
 }
 
 /// Key events are ignored while the pilot drives, so a stray keypress in the

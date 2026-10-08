@@ -306,7 +306,7 @@ async fn main() -> Result<()> {
     // pipe — assets/build.sh asks for it and has no tty to spare. The tape's
     // Sleep has to be at least this long or the recording cuts mid-gesture, and
     // that number used to be copied into the tape by hand.
-    if std::env::var("ZOETROPE_DEMO").as_deref() == Ok("duration") {
+    if std::env::var("AGENTS_GRAPH_DEMO").as_deref() == Ok("duration") {
         println!("{:.2}", agents_graph::autopilot::tour_secs());
         return Ok(());
     }
@@ -461,7 +461,8 @@ mod tests {
         // Inspect is a point-in-time view: a transcript whose last activity is
         // far in the past reports main as Idle (interactive agents never claim
         // completion — the format has no end marker to prove it).
-        let dir = std::env::temp_dir().join(format!("agents_graph-fullparse-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("agents_graph-fullparse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let tmp = dir.join("77777777-7777-7777-7777-777777777777.jsonl");

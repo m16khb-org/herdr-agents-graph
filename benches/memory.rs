@@ -14,9 +14,9 @@ mod common;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{Session, Spec};
 use agents_graph::state::{App, Mode};
 use agents_graph::tailer::UiEvent;
+use common::{Session, Spec};
 
 /// Bytes currently allocated and not yet freed.
 static LIVE: AtomicUsize = AtomicUsize::new(0);

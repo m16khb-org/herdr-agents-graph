@@ -59,7 +59,7 @@ pub async fn run(
     let mut last_status_tick = Instant::now();
 
     // Recording-only scripted pointer (see crate::autopilot). Off unless
-    // ZOETROPE_DEMO=1, so this is inert for every real user. Armed at startup
+    // AGENTS_GRAPH_DEMO=1, so this is inert for every real user. Armed at startup
     // but only fired by the trigger key, so the tape picks the moment — the
     // waypoints are read off the laid-out graph at that instant.
     let demo = crate::autopilot::requested();
