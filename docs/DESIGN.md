@@ -1,6 +1,6 @@
-# zoetrope — Design Document (v1)
+# herdr-agents-graph — Design Document (v1)
 
-**zoetrope** is a terminal UI that visualizes Claude Code agent sessions as a live flow graph: the main agent, its subagents, workflows, and tool activity — rendered with [rataflow](../../rataflow). Synthesized from a multi-agent research pass over rwy (`/Users/furkan/personal/projects/rwy`), rataflow (`/Users/furkan/personal/projects/rataflow`), and real transcripts under `~/.claude/projects/`. Full research: see the workflow output referenced in the repo history.
+**herdr-agents-graph** (binary `agents-graph`) is a terminal UI and Herdr plugin that visualizes Claude Code, Codex, and omp agent sessions as a live flow graph: the main agent, its subagents, workflows, and tool activity — rendered with [rataflow](https://crates.io/crates/rataflow). The design comes from [zoetrope](https://github.com/furkankly/zoetrope), which this project forks.
 
 > **This is the v1 structural spec** (module map, transcript format, type shapes). For the *invariants and principles* the implementation now follows — order-independence, the content-vs-presentation clocks, ground-truth-over-heuristics, and the derived-state heuristics catalogue — see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -16,33 +16,26 @@
 One TUI command over the unified timeline engine (see the **Timeline** section) plus the headless `inspect`. The launch only picks **defaults** — *what* to open and *where the playhead starts*; once open, scrub / follow / pause / go-live all work regardless.
 
 ```
-zoe                      # follow the current project's live session
-zoe <file.jsonl>         # replay a recording, played from the start (any provider's file)
-zoe <id>                 # replay a session by id, or a unique prefix, across providers
-zoe <dir>                # follow another project's live session
-zoe <file> --follow      # ride a file's live edge instead of replaying it
-zoe <file> --speed 8     # playback speed (default 8.0)
-zoe --provider codex ... # force the format instead of reading it off the content
-zoe inspect <file|id>    # no TUI: print session info + parsed tree (smoke-test)
+agents-graph             # follow the current project's live session
+agents-graph <file.jsonl>         # replay a session file, played from the start (any provider's file)
+agents-graph <id>                 # replay a session by id, or a unique prefix, across providers
+agents-graph <dir>                # follow another project's live session
+agents-graph <file> --follow      # ride a file's live edge instead of replaying it
+agents-graph <file> --speed 8     # playback speed (default 8.0)
+agents-graph --provider codex ... # force the format instead of reading it off the content
+agents-graph inspect <file|id>    # no TUI: print session info + parsed tree (smoke-test)
 ```
 
 Resolution goes through `provider::open` (see [DISCOVERY.md](DISCOVERY.md)): a **file** is `Target::Path` and bulk-loads + tails (replay feeder), the provider read off its first record; an **id** is `Target::Id`, looked up across every provider's roots; a **dir** (or none → cwd) is `Target::Here` and follows the newest session of that project, any provider. `--follow` only changes the start position (head vs beginning) via `Mode`. `Cli = View { target: Option<String>, follow: bool, speed: f64, provider: Option<Provider> } | Inspect { file, provider }`. Arg parsing: hand-rolled over `std::env::args` (no clap; keep deps lean).
 
 ## Workspace layout
 
-Two crates. `zoetrope` (repo root) is the published one: the portable core plus the native frontend, split by a Cargo feature (`default = ["native"]`). `zoetrope-web` (`web/wasm/`) is the browser frontend — `publish = false`, built only for `wasm32`.
-
-The split keeps the browser frontend *out of the published crate*: nothing wasm ships to crates.io, and depending on the `zoetrope` library from a wasm target imposes no ratzilla/getrandom choices on you.
-
-The browser frontend is **excluded** from the root workspace rather than being a member of it, so it resolves as its own workspace with its own lockfile and target dir. This is the mainstream shape for a wasm frontend, not a workaround of last resort: putting one in a workspace is what produces the well-known trunk/`wasm-bindgen` version-mismatch failures, because membership forces a single `wasm-bindgen` across crates that have no reason to agree on one. The reason is that it cannot be compiled for the host *at all*: rataflow gates its ratzilla `From` impls on `all(feature = "ratzilla", target_arch = "wasm32")`, so a host-target check fails to typecheck. `default-members` would have kept it out of a bare `cargo build`, but not out of `cargo check --workspace` — and not out of rust-analyzer, which would sit on two permanent phantom errors. Excluding it is the only thing that makes the editor honest. `web/wasm/.cargo/config.toml` sets `[build] target = "wasm32-unknown-unknown"` so cargo and rust-analyzer both default to the right target there — it sits next to `Trunk.toml` in the crate root, which is where trunk runs from, so one copy serves everything; cargo's own answer to this, `per-package-target`/`forced-target`, is still nightly-only.
-
-Two lockfiles means the two frontends can drift apart. Most of that drift is harmless and even desirable — `wasm-bindgen`, `getrandom` and the ratzilla stack should track the browser build's needs, not the terminal's. What must **not** drift is anything that decides what gets drawn: the ratatui tree (`ratatui`, `ratatui-core`, `ratatui-widgets`, and their `unicode-width` / `lru` / `line-clipping` / `instability`) plus rataflow's `rust-sugiyama`. Those are pinned to the same versions in both lockfiles on purpose. If you `cargo update` one, re-check the other.
+One crate, `herdr-agents-graph` (library `agents_graph`, binary `agents-graph`): the portable core plus the native frontend, split by a Cargo feature (`default = ["native"]`). With `native` off the library builds as a portable core — model, timeline, graph, UI rendering, providers — with no runtime and no IO of its own.
 
 ```text
-Cargo.toml          # [workspace] exclude = ["web/wasm"]  — its own workspace, own lockfile
-src/                # the zoetrope library + the `zoe` bin (src/main.rs)
-web/wasm/           # the zoetrope-web crate: Cargo.toml, index.html (trunk entry), src/main.rs
-herdr-plugin/       # the Herdr plugin: a manifest and shell scripts that launch `zoe`; ships by git clone, not with the crate
+Cargo.toml          # one package: the library + the `agents-graph` bin (required-features = ["native"])
+src/                # the agents_graph library + the bin (src/main.rs); src/herdr.rs is `agents-graph herdr resolve|toggle`
+herdr-plugin/       # the Herdr plugin: a manifest and shell scripts that launch `agents-graph`; ships by git clone, its build step downloads the release binary
 ```
 
 ## Dependencies (Cargo.toml)
@@ -50,48 +43,37 @@ herdr-plugin/       # the Herdr plugin: a manifest and shell scripts that launch
 `edition = "2024"`, `license = "MIT"`.
 
 ```toml
-# Portable core (native + wasm): model, timeline, graph, UI rendering, parsing.
-ratatui       = { version = "0.30", default-features = false, features = ["underline-color"] }
-rataflow  = { path = "../rataflow", default-features = false, features = ["sugiyama"] }
+# Portable core: model, timeline, graph, UI rendering, parsing.
+ratatui       = { version = "0.30", default-features = false }
+rataflow      = { version = "0.1.0", default-features = false, features = ["sugiyama"] }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
-chrono        = { version = "0.4", features = ["serde", "clock"] }   # + "wasmbind" on wasm
-web-time      = "1"          # Instant/SystemTime that work on wasm (perf.now); re-exports std on native
+chrono        = { version = "0.4", features = ["serde", "clock"] }
+web-time      = "1"          # Instant/SystemTime; re-exports std on native
+imbl          = "7"          # persistent collections: a SessionModel clone shares structure
 unicode-width = "0.2"        # display-column width for truncation (CJK/emoji are 2 cols)
 
 # native feature → the native frontend (all optional, gated #[cfg(feature = "native")])
 crossterm = { version = "0.29", features = ["event-stream"], optional = true }
-tokio     = { version = "1", features = ["rt-multi-thread","macros","time","sync","fs","io-util"], optional = true }
+tokio     = { version = "1", features = ["rt-multi-thread","macros","time","sync"], optional = true }
 futures   = { version = "0.3", optional = true }
 anyhow    = { version = "1", optional = true }
 # native also flips on ratatui/crossterm + rataflow/crossterm.
 
-# the library's own wasm need, under [target.'cfg(target_arch="wasm32")'.dependencies]
-chrono = { features = ["wasmbind"] }   # so Utc::now() reads the browser clock
 ```
 
-The browser frontend's deps live in `web/wasm/Cargo.toml`, not here:
-
-```toml
-zoetrope  = { path = "../..", default-features = false }   # the portable core, no native IO
-ratzilla  = "0.3.1"          # ratatui's wasm backend (WebGl2 + on_mouse_event)
-rataflow  = { features = ["sugiyama", "ratzilla"] }        # event From impls + Flow::handle_wheel
-web-sys, wasm-bindgen, console_error_panic_hook            # wheel listener + panic hook
-critical-section = { features = ["std"] }                  # ratatui's layout-cache guard, picked by the bin
-getrandom (0.3) + getrandom_v04 (0.4)                      # both, wasm_js backend (pulled via ratzilla)
-```
-
-**One binary per crate:** `zoe` → `src/main.rs` (`required-features = ["native"]`), the only thing `cargo install zoetrope` puts on your PATH; `web` → `web/wasm/src/main.rs`, built by trunk (`web/scripts/build-wasm.sh`) into `web.js` / `web_bg.wasm`. No network deps anywhere (hard constraint #1).
+**One binary:** `agents-graph` → `src/main.rs` (`required-features = ["native"]`). It reaches users as a release archive, downloaded by the plugin's build step, not from a package manager. No network deps anywhere (hard constraint #1; the download happens in the plugin's shell script, outside the binary).
 
 ## Module map
 
 ```
 src/
-├── lib.rs         # crate root — the portable core shared by the native + browser frontends
+├── lib.rs         # crate root — the portable core shared by the native frontend and any other host
 ├── main.rs        # native binary + CLI parsing; spawns the tailer task, runs the TUI; the `inspect` subcommand
-├── tui.rs         # terminal lifecycle + the central native event loop (tick_camera/tick_timeline/status_tick/draw)
+├── tui.rs         # terminal lifecycle + the central native event loop (tick_camera/tick_timeline/status_tick/draw, drawing only when the frame is stale)
 ├── handler.rs     # input routing: app-level keys → App, the rest → the flow; scrubber clicks; process_flow_events
-├── autopilot.rs   # native-only: the scripted pointer/keystroke pilot behind ZOETROPE_DEMO=1 (see DEMO-ASSETS.md)
+├── herdr.rs       # native-only: `agents-graph herdr resolve|toggle`, the Herdr plugin's JSON handling (see HERDR-PLUGIN.md)
+├── autopilot.rs   # native-only: a scripted pointer pilot behind AGENTS_GRAPH_DEMO=1; inert unless set
 ├── fact.rs        # the provider boundary: Fact + FactKind, the vocabulary every provider speaks and the model folds
 ├── provider/
 │   ├── mod.rs     # the input side: Provider enum, SessionFile, Session, the Stream enum, open / sweep / assemble (DISCOVERY.md)
@@ -100,23 +82,28 @@ src/
 │   │   ├── mod.rs       # the Claude provider: Entry → Facts (`facts`, `Record`) and the per-file `Stream`; the tool-summary lexicon
 │   │   ├── wire.rs      # Claude's serde model for JSONL entries + meta.json sidecars
 │   │   └── discovery.rs # the ~/.claude/projects layout: cwd sanitization, session / subagent / journal scans, the primitives
-│   └── codex/
-│       ├── mod.rs       # the Codex provider: rollout lines → Facts through a `Stream` that learns its thread from its first line
-│       ├── wire.rs      # Codex's serde model: the envelope, `response_item`, `event_msg` and its `item_completed` items
-│       └── discovery.rs # the ~/.codex/sessions/YYYY/MM/DD layout: rollouts, the head read that classifies them, the primitives
+│   ├── codex/
+│   │   ├── mod.rs       # the Codex provider: rollout lines → Facts through a `Stream` that learns its thread from its first line; `token_usage_record` is a fallback token source only when a rollout has no `token_count` (`Stream::finish`)
+│   │   ├── wire.rs      # Codex's serde model: the envelope, `response_item`, `event_msg` and its `item_completed` items
+│   │   └── discovery.rs # the ~/.codex/sessions/YYYY/MM/DD layout: rollouts, the head read that classifies them, the primitives
+│   └── omp/
+│       ├── mod.rs       # the omp provider: session records → Facts through a per-file `Stream` (the interactive root, or a spawned child's own transcript)
+│       ├── wire.rs      # omp's serde model for its session JSONL
+│       └── discovery.rs # the ~/.omp/agent/sessions/<project-key> layout: roots, `<ts>_<uuid>/` child directories, the primitives
 ├── state/
 │   ├── mod.rs     # App: owns the Flow + SessionModel + Timeline + SessionInfo + UI state; handle_ui_event, seek, camera
 │   ├── session.rs # SessionModel: the pure domain model (agents, statuses, tool calls) folded from Facts — knows no format
 │   ├── timeline.rs# Timeline: the ts-ordered item list + playhead (time-travel); pacing, gap-compression, seek, floor
 │   ├── graph.rs   # incremental SessionModel → Flow projection (never rebuilds except backward seek; Sugiyama on `r`)
+│   ├── frame.rs   # RedrawGate / FrameStamp: whether the frame on screen is stale, so a quiet session stops repainting
 │   ├── info.rs    # SessionInfo: untimed session metadata, folded off the timeline (i overlay + inspect header)
 │   └── render.rs  # the headless text view: what `inspect` prints, and what a provider's golden test compares
 ├── tailer/        # background FEEDER (pure: no pacing/seeking — the App owns the playhead)
 │   ├── mod.rs     # task entry + shared wire types (TailRequest / UiEvent); the wire carries Statements
-│   ├── live.rs    # live tailing — one poll loop per session, emits UiEvent::Batch
+│   ├── live.rs    # live tailing — one poll loop per session (200 ms, slowing after 30 s quiet), emits UiEvent::Batch
 │   ├── replay.rs  # replay assembly (native): parse all files up front, merge by ts, then keep tailing
-│   ├── item.rs    # portable replay-stream pieces — ReplayItem (a statement + its Timing), dating, and Bundle (the browser's feeder: files as text in, streams kept for appends); IO-free (wasm)
-│   └── bytes.rs   # incremental byte reader: stat / read-appended / split-on-\n / buffer-partial (pure, testable)
+│   ├── item.rs    # portable replay-stream pieces — ReplayItem (a statement + its Timing), dating, and Bundle (files as text in, streams kept for appends); IO-free
+│   └── bytes.rs   # incremental byte reader: streaming `read_lines` for the first read, `read_appended` in 1 MiB chunks, split-on-\n / buffer-partial (pure, testable)
 └── ui/
     ├── mod.rs     # draw: canvas + scrubber + status bar; help/info overlays
     ├── nodes.rs   # AgentNode: the agent-card NodeContent (semantic zoom: Card vs Cell)
@@ -205,7 +192,7 @@ pub struct AgentInfo {
 
 ## Tailer — the feeder (tailer/)
 
-**Decision: poll-based, no `notify` dep** (poll is simpler, WASM-trait-friendly, 200ms is imperceptible). The tailer is a **pure feeder** — it no longer paces or seeks (that moved to the App's `Timeline`); it only produces an ordered update stream and keeps the files watched.
+**Decision: poll-based, no `notify` dep** (poll is simpler, and 200ms is imperceptible). Polling starts at 200 ms and backs off to 500 ms, 1 s, then 2 s after 30 s without a change (`src/tailer/live.rs`); a change snaps it back. The initial read streams line by line (`tailer::read_lines`) and returns a tail state carrying the file's identity, so a rename over the file between the read and the first poll counts as a reset. The tailer is a **pure feeder** — it no longer paces or seeks (that moved to the App's `Timeline`); it only produces an ordered update stream and keeps the files watched.
 
 ```rust
 pub enum TailRequest { Watch(Target) }                   // switch session; only request now (a path, an id, or a directory to follow)
@@ -242,7 +229,7 @@ to its last.
 
 **Two load strategies, one tail loop.** Both feeders end in the shared `tail_loop`, so EVERY session keeps tailing for appends (a replayed file that grows just "goes live" on its own — completion is unknowable, so nothing is ever assumed finished):
 - **File target** (`run_replay`): `build_replay` parses every session file, dates undated statements — sidecar births, ledger endings — (`date_and_sort`), **routes session-level statements into `SessionInfo`** (off the timeline via `Statement::is_session_meta`), and merges the rest into a ts-sorted `Vec<ReplayItem>` → one `ReplayLoaded`. Then enter `tail_loop`, resuming each file's tail from the **byte offset the parse consumed** (a *snapshot seed* — not live EOF — so lines appended *during* the parse aren't dropped). Auto-switch disabled (`follow = None`; you asked for this file).
-- **Dir/none target** (`run_live`): announce `SessionReset` (id adoption), then `tail_loop` — the first poll backfills the existing file (arrival order); subsequent polls emit appends; the project dir is re-scanned for a *newer* session (throttled auto-switch: `SWITCH_SCAN_EVERY`~2s, only after `SWITCH_IDLE_TICKS`~30s idle, dir targets only).
+- **Dir/none target** (`run_live`): announce `SessionReset` (id adoption), then `tail_loop` — the first poll backfills the existing file (arrival order); subsequent polls emit appends; the project dir is re-scanned for a *newer* session (throttled auto-switch: `SWITCH_SCAN_EVERY`~2s, only after `SWITCH_IDLE`~30s idle, dir targets only).
 
 Per-file tail state `{ offset, partial, overflowed, identity: (dev, ino) }`. Each tick: stat the file; a shrink (`len < offset`) **or an inode swap** (rotation — a different `(dev,ino)` even if not shorter) → reset + `SessionReset` and re-attach; grown → read appended bytes, split on `\n`, hand complete lines to the file's provider `Stream`, buffer the trailing partial (a runaway line past `MAX_PARTIAL`=8 MiB is dropped, not buffered forever). asks `Session::rescan` for files that appeared; absent dirs are fine).
 
@@ -255,7 +242,7 @@ Per-file tail state `{ offset, partial, overflowed, identity: (dev, ino) }`. Eac
 ```rust
 pub struct Timeline {
     pub items: Vec<ReplayItem>,   // bulk-loaded, then appended as the feeder tails
-    pub replay: bool,             // launch intent: replaying a recording vs following live. NOT a completeness claim (a replay can grow & go live). Not runtime-derivable. Does NOT gate pacing (the edge does); gates the `now` reference (playhead vs wall-clock) + the end-settle latch
+    pub replay: bool,             // launch intent: replaying a session file vs following live. NOT a completeness claim (a replay can grow & go live). Not runtime-derivable. Does NOT gate pacing (the edge does); gates the `now` reference (playhead vs wall-clock) + the end-settle latch
     pub cursor: Option<DateTime<Utc>>,  // playhead = the universal "now" for rendering
     pub folded: usize,            // items applied to the derived model so far
     pub follow_head: bool,        // pinned to the edge (playing/following) vs parked (scrubbed)
@@ -266,16 +253,16 @@ pub struct Timeline {
 ```
 
 - **Pin-vs-pace is decided by the edge, not the mode.** `advance`/`append_live` compare cursor-vs-head: behind the edge the cursor always **paces forward**; only at the edge does it **pin** (and live appends snap in). So `space` resumes from the playhead in *both* modes, and a scrubbed-back live session **catches up** to the edge then follows — there's no "play = jump to live." `End`/`go_live` is the explicit jump.
-- **`replay`** is the one surviving "mode" bit — the **launch intent**: are you replaying a recording, or following a live session? Set from the launch `Mode`, and **not runtime-derivable** (a quiet live session is byte-identical to a finished recording, so the flag can't be eliminated). It is NOT a claim the file is complete — a replay can grow and go live (the feeder always tails; nothing is assumed finished), which is why it's named for the intent, not a "bounded/complete" property. It does NOT gate pacing (the edge does); it gates only the `now` reference and the end-settle latch.
+- **`replay`** is the one surviving "mode" bit — the **launch intent**: are you replaying a session file, or following a live session? Set from the launch `Mode`, and **not runtime-derivable** (a quiet live session is byte-identical to a finished file, so the flag can't be eliminated). It is NOT a claim the file is complete — a replay can grow and go live (the feeder always tails; nothing is assumed finished), which is why it's named for the intent, not a "bounded/complete" property. It does NOT gate pacing (the edge does); it gates only the `now` reference and the end-settle latch.
 - **Pacing** (`advance`, per 16ms frame): paces the cursor toward the next event, **compressing dead air** — but not with a flat cap. `compress_gap` is a **log-compression** curve (`GAP_FAITHFUL_KNEE`=0.8s, `GAP_COMPRESS_SCALE`=0.6): real-time below the knee, then `knee + scale·ln(1 + (t−knee)/knee)` above it — *graded*, so a 5-minute wait still reads longer than a 5-second one (an hour of dead air crosses in <10s). The `s` key sets `compress_gaps = false` for faithful real-time pacing. The App folds the prefix `items[0..fold_target()]` (`App::fold_to`); the live append and replay paths share it.
-- **`now` reference** = wall clock only at a *live* edge (`!replay && follow_head && at_edge`), the cursor otherwise (incl. live catch-up) — so a replay always judges liveness as-of-the-playhead (its timestamps are a past recording, unrelated to wall time). See Status rules.
+- **`now` reference** = wall clock only at a *live* edge (`!replay && follow_head && at_edge`), the cursor otherwise (incl. live catch-up) — so a replay always judges liveness as-of-the-playhead (its timestamps are in the past, unrelated to wall time). See Status rules.
 - **Seek / scrub** (`App::seek`, `seek_to_fraction`, `seek_prompt`, `go_live`): forward → fold in place (cheap); backward → `App::rebuild_to` re-folds the prefix into a fresh `SessionModel` and re-syncs, carrying view across by id (`graph::restore_positions` + `select_node`). A seek is discontinuous → ephemerals reset (chips re-baseline via `adopt_baseline`, then the per-frame `reconcile` reconstructs in-flight runs from state; glide cancels — see [`ARCHITECTURE.md`](ARCHITECTURE.md) §5). `space` is a unified play/pause that resumes from the current cursor; `End`/`go_live` re-pins to the edge.
 - **Scrubber position is event-indexed, not time-linear** — real sessions cluster work then sit idle (the rwy sample: ~11 min across 10.65 h), so a time-linear bar would bury all action in a sliver. `progress` / `fold_at_fraction` map the bar over `[floor, len]` where `floor` is the unavoidable start clump (same-timestamp ties + dated metadata that can only fold atomically), so the leftmost click reaches position 0. `gap_markers` (≥`GAP_MARKER_SECS`=60s) place the fast-forward `»` markers on the marker strip. Because the axis is event-indexed, a raw event-count would be flat — so the track is a **tool-activity sparkline** (per-column count of `ToolStart` facts over its item range) which peaks where the work happened; see UI.
 - **Emergent transport** (`App::transport` → Live / Playing / Paused / History / Idle): "Live" = following the edge **and** a fresh append (`last_batch_at` within ~10s), so a resumed *replay* reads Live and an old followed session reads Idle. Drives the status badge + scrubber tag — never a hardcoded mode.
 
 ## Event loop — native (tui.rs)
 
-The native terminal loop. The **browser frontend** (`web/wasm/src/main.rs`) runs an equivalent loop driven by ratzilla's `requestAnimationFrame`: the *same* per-frame ticks (`tick_auto_pan`/`tick_animation`/`tick_camera`/`tick_timeline`), but it calls `status_tick` every frame (no ~1s gate) and takes input via exported `zoetrope_load`/`zoetrope_append` JS entry points instead of a crossterm stream. The portable core is shared (`lib.rs`); only the loop + IO differ.
+The native terminal loop ticks every 16 ms but draws only when `RedrawGate` says the frame is stale: an event arrived, the app is animating, or a time-driven part of the picture (transport badge, ant phase, chips) changed. The portable core is shared (`lib.rs`); only the loop and IO are native.
 
 ```
 ratatui::init() → execute!(EnableMouseCapture)
@@ -319,18 +306,18 @@ The crossterm input channel is **unbounded** (input must never block); the **cap
 - **Detail panel** (ui/panel.rs): when `flow.selected_nodes().next()` is Some → a **30/70** horizontal split (orientation canvas 30% · panel 70%); panel shows the selected agent's description, model, status, timing, and a scrollable recent-tool-call list (name + summary, `⏳`/`✓`/`✗` + local time; path tools keep the basename). Data from `SessionModel`, keyed by node id. Copy the selected id out before borrowing app mutably elsewhere (borrow-checker note from rwy).
 - **Tool-call chips** (ui/chips.rs): ephemeral `⚒ read ×N` overlays anchored *below* agent cards (NOT graph nodes — no layout/minimap/hit-test), drawn in `render_canvas` after the flow. One reconcile pass per frame ages them in watch-time; pending persists as the in-flight indicator, completed fade (`CHIP_TTL` 2.5s, err 4s, ≤3/agent), width-gated like edge labels. This is where "current tool" lives now — edges carry no labels. Full model: [`ARCHITECTURE.md`](ARCHITECTURE.md) §5.
 - **Scrubber** (`render_scrubber`, shown when the timeline has a span): a **bordered panel** (rounded, subtle), 6 rows = border + marker strip (1) + bars (2) + info (1) + border. Markers and bars are on **separate rows** so neither can overwrite the other (a marker on a bar cell hid real activity; the gap seam was the worst offender).
-  - **Marker strip (1 row, on top)**: **fast-forward `»`** at idle-gap columns (≥`GAP_MARKER_SECS`, where playback compresses dead air; full-session; drawn only when gap-compression is on); **spawn** (an `Agent` birth, or a `Spawn` call whose agent never appeared) drawn as the session's provider's emblem — Claude's sunburst `❋` in coral ≈ xterm 173, Codex's circled star `❂` in green ≈ xterm 36, a plain `✦` in a neutral before the root is stated (`ui::spawn_mark`; the browser's font atlas drops the colour and shows the glyph alone) and **failure `✗`** (red, a failed `ToolEnd`), **past-only** (`c < head`) so they reveal as the playhead reaches them (in sync with the graph's chips).
+  - **Marker strip (1 row, on top)**: **fast-forward `»`** at idle-gap columns (≥`GAP_MARKER_SECS`, where playback compresses dead air; full-session; drawn only when gap-compression is on); **spawn** (an `Agent` birth, or a `Spawn` call whose agent never appeared) drawn as the session's provider's emblem — Claude's sunburst `❋` in coral ≈ xterm 173, Codex's circled star `❂` in green ≈ xterm 36, a plain `✦` in a neutral before the root is stated (`ui::spawn_mark`) and **failure `✗`** (red, a failed `ToolEnd`), **past-only** (`c < head`) so they reveal as the playhead reaches them (in sync with the graph's chips).
   - **Activity bars (2 rows)**: a tool-call sparkline via ratatui's `Sparkline` — per-column height = tool calls in that slice (`ToolStart` facts counted over the column's item-index range, binned on the event-index axis). Counts normalized to the available eighths (`rows × 8` = 16) with a **floor of 1 for any nonzero column** (`ceil(count/max × levels)`) — else the busiest column scales the rest down and a low-activity tick rounds to 0 (invisible). Played/unplayed fill: bright accent left of the playhead, dim right.
   - **Playhead**: a gold vertical line `│` over a translucent (`muted`-bg) column, spanning the marker strip + both bar rows.
   - **Info row**: playhead date+time (left), transport tag (right). Full-width so changing labels can't reflow it; the whole row is the seekable area, so a click maps to the exact width the playhead is drawn over. Row 2 is an info line: the playhead's local date+time (left) and the emergent transport tag (right). `App.scrubber_area` is recorded each frame for hit-testing mouse drags.
-- **Status bar**: gold `zoetrope` wordmark, emergent transport badge (● LIVE / ▶ PLAY / ⏸ PAUSE / ⏮ PAST / ■ IDLE), session title, agent & tool counts, camera mode, last error, key hints. (`q` quit, `? `help.)
+- **Status bar**: gold `agents-graph` wordmark, emergent transport badge (● LIVE / ▶ PLAY / ⏸ PAUSE / ⏮ PAST / ■ IDLE), session title, agent & tool counts, camera mode, last error, key hints. (`q` quit, `? `help.)
 - **Overlays**: `?` help (full key reference) and `i` session info (the untimed `SessionInfo`: mode, permission, last prompt, queued/file-edit counts) — both centered, `esc` closes.
 - **Companions**: `Background::new(&flow)` then `&mut flow` then `MiniMap::new(&flow)` (render order matters; Widget impl is on `&mut Flow`, companions take `&Flow` — separate render_widget calls avoid borrow conflicts).
 - Keys: `q`/`ctrl-c` quit; `space` play/pause (resume from cursor); `s` toggle gap-compression (faithful vs skip-idle pacing); `o`/`f` camera Overview/Follow; `r` relayout (tidy); `[`/`]` step prompt eras; `End` or `g` go-live; `?`/`i` overlays; `esc` closes overlay / detail panel. Detail-panel scroll: `j`/`k`/PgUp/PgDn. Remaining nav/zoom/pan → `flow.handle_key_event` / `handle_controls_key_event` (whitelisted — the graph is read-only, destructive library bindings are blocked). Scrubber-row mouse press/drag → `App::seek_to_fraction`; other mouse → `flow.handle_mouse_event`. Consume `into_events()`; any flow event drops Follow (`process_flow_events`).
 
 ## inspect subcommand
 
-`zoe inspect <file|id>`: open the session (`provider::open`, any provider, any file of it, or an id), fold every file, and print: session title, **session info** (the provider's labelled rows: mode · permission · queued · file edits · last prompt for Claude; app · version · cwd for Codex), agent/tool totals, then the agent tree (type, description, status, #tools, tokens). Exit non-zero on an unreadable or unrecognised file. **This is the headless smoke test** — CI-runnable end-to-end check of parser + session model + info extraction with no TTY.
+`agents-graph inspect <file|id>`: open the session (`provider::open`, any provider, any file of it, or an id), fold every file, and print: session title, **session info** (the provider's labelled rows: mode · permission · queued · file edits · last prompt for Claude; app · version · cwd for Codex), agent/tool totals, then the agent tree (type, description, status, #tools, tokens). Exit non-zero on an unreadable or unrecognised file. **This is the headless smoke test** — CI-runnable end-to-end check of parser + session model + info extraction with no TTY.
 
 ## Testing (inline #[cfg(test)], no tests/ dir)
 
@@ -341,7 +328,7 @@ Worth testing: transcript line parsing against real-format fixture strings (ever
 ## Pitfalls checklist (from research — verify before calling done)
 
 - [ ] `rataflow::Error` (no FlowError); `add_edge_from_connection(conn, content)` two args (unused in v1 — read-only graph)
-- [ ] Draw every loop iteration; post-select try_recv drains; unbounded crossterm channel
+- [ ] Draw only when the frame is stale (`RedrawGate`); post-select try_recv drains; unbounded crossterm channel
 - [ ] `tick_animation` wired (rwy reference loop lacks it)
 - [ ] Partial trailing line buffered; `len < offset` → reset + SessionReset
 - [ ] `parentUuid` present-and-null (root) vs absent (metadata) — Option handling, lean variants for flat types

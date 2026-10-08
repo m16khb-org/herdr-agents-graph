@@ -2,13 +2,14 @@
 
 A bridge, not a second frontend. [Herdr](https://herdr.dev) already knows which
 agent occupies a pane and the native id of the session running there, which is
-the pair `zoe` would otherwise have to infer. The plugin asks for it and hands
+the pair `agents-graph` would otherwise have to infer. The plugin asks for it and hands
 it over. The user-facing half is [`herdr-plugin/README.md`](../herdr-plugin/README.md);
 this is the rest.
 
 It lives in `herdr-plugin/`, ships by git clone rather than with the crate, and
-is a manifest plus three shell scripts. Herdr plugin panes run an ordinary argv
-command in a real TTY, so `zoe` itself is the plugin UI. Nothing is embedded in
+is a manifest plus four shell scripts and a small `herdr` subcommand of the
+binary. Herdr plugin panes run an ordinary argv command in a real TTY, so
+`agents-graph` itself is the plugin UI. Nothing is embedded in
 Herdr's render loop, and nothing about the graph is written twice.
 
 ---
@@ -19,7 +20,7 @@ Herdr's render loop, and nothing about the graph is written twice.
 is, the core decides what a session is, and a feeder reaches it through `open`.
 The plugin is the case `Target::Id` was written for: an agent's own
 integration reports a session id, the file is not, and finding the file is
-the core's job across every provider's roots. omp and pi report a path
+the core's job across every provider's roots. omp reports a path
 instead, because their integration already knows the transcript file; that
 lands in `Target::Path`, the case the plain CLI uses for an explicit file.
 Either way the core already knows what to do with it, so the bridge never
@@ -30,23 +31,27 @@ never learns a layout, and never guesses a project from a working directory. It
 resolves one pair, `(agent, session id or path)`, and spends it on one command:
 
 ```
-zoe --provider <agent> --follow <id-or-path>
+agents-graph --provider <agent> --follow <id-or-path>
 ```
 
 `--provider` narrows the lookup to the agent Herdr named. `--follow` is right
 by definition here, since the pane's agent is running.
 
-## 2. The three scripts
+## 2. The scripts
 
 | Script | Role |
 |---|---|
-| `herdr/pane.sh` | all three actions (`open`, `open-split`, `open-tab`), differing only in the placement they pass. Opens the graph pane, or closes it when the graph is the focused pane, which is what makes the key a toggle |
-| `herdr/open.sh` | the pane command. Resolves the session and execs `zoe` |
-| `herdr/resolve.sh` | asks `pane.get` about the focused pane, prints `<agent> <session-id-or-path>`, or exits with the reason |
+| `herdr/pane.sh` | all three actions (`open`, `open-split`, `open-tab`), differing only in the placement they pass. It execs `agents-graph herdr toggle <placement>` |
+| `herdr/open.sh` | the pane command. Runs `agents-graph herdr resolve`, then execs `agents-graph --provider P --follow V` |
 | `herdr/keys.sh` | the `setup-keys` / `remove-keys` actions |
-| `herdr/ensure-zoe.sh` | the `[[build]]` step: is a usable `zoe` on `PATH` |
+| `herdr/install.sh` | the `[[build]]` step: download and verify the release binary into `herdr-plugin/bin/` |
 
-Two decisions in there are worth keeping.
+The JSON handling is not in shell. `src/herdr.rs` implements
+`agents-graph herdr resolve` and `agents-graph herdr toggle`, so no script
+parses it, and the binary is only ever run from `herdr-plugin/bin/`, never from
+`PATH`.
+
+Three decisions in there are worth keeping.
 
 **Resolution reads `focused_pane_id`, never `HERDR_PANE_ID`.** In a pane
 command, `HERDR_PANE_ID` is the plugin's own newly created pane, so asking Herdr
@@ -61,10 +66,12 @@ dropped. The pane's own terminal is the only surface that cannot be turned off.
 Resolution therefore happens in the pane, where its failures are visible, and
 not in the action, where they would not be.
 
-**Closing recognises the plugin's own pane by label.** Herdr labels a plugin
-pane with its manifest title, so a focused pane labelled `zoetrope` that holds
-no agent is ours, and the key closes it instead of trying to graph it. A pane a
-user renamed `zoetrope` still holds an agent, so it is not mistaken for ours.
+**Toggling is by pane id, not by label.** `toggle` writes the id of the pane it
+opened to `$HERDR_PLUGIN_STATE_DIR/open-pane`. The next press reads it, and if
+`herdr pane get` still finds that pane it closes it through
+`herdr plugin pane close`. If the pane was closed by hand the id is stale, and
+the press opens a new one. No label is compared, so focus can be anywhere and a
+renamed pane cannot be mistaken for ours.
 
 ## 3. Keys
 
@@ -87,37 +94,29 @@ as commented bindings, which documents them where the user will look.
 
 ## 4. Versions
 
-Three numbers, three reasons to change, and none of them follows a zoetrope
-release:
+Two numbers, and the manifest version is tied to the crate:
 
 | Number | Where | Bumped when |
 |---|---|---|
-| `version` | `herdr-plugin.toml` | the files in `herdr-plugin/` change. Displayed by Herdr, resolved by nothing |
-| `min_herdr_version` | `herdr-plugin.toml` | a script starts using a newer Herdr API. The only one that can block an install |
-| `ZOE_SINCE` | `herdr/ensure-zoe.sh` | the `zoe` command line the scripts call changes. A label for the error message, not a check |
+| `version` | `herdr-plugin.toml` | every release. The build step downloads the release tagged `v<version>`, so it must equal the crate version (the release workflow refuses a tag that disagrees with either) |
+| `min_herdr_version` | `herdr-plugin.toml` | a script starts using a newer Herdr API (now 0.9.3, which reports `agent_session` kinds and `focused_pane_id`). The only one that can block an install |
 
-`herdr plugin install` clones the repo at its default branch (or at `--ref`), so
-what people get is main, and reinstalling is how it updates. There is no
-registry, no tag resolution and no `plugin update`.
+`herdr plugin install` clones the repo and then runs the build step, which
+downloads `agents-graph-<target>.tar.gz` and `SHA256SUMS` from the GitHub release
+for `v<version>`, checks the archive against the checksum, and installs the
+binary as `herdr-plugin/bin/agents-graph`. It stops with nothing installed if
+the platform has no release, the checksum has no entry, or it does not match.
+`AG_RELEASE_BASE` overrides the download location. `herdr plugin link` runs no
+build step, so a linked checkout needs `bin/agents-graph` put there by hand.
 
-**Why the manifest version does not mirror the crate.** Plugins that keep the
-two in step have a reason to: their installer builds a release download URL out
-of the version, because the plugin is how their binary is distributed. Nothing
-here downloads anything. `zoe` reaches people through Homebrew and crates.io,
-and the bridge drives whatever is on `PATH`, so a mirrored number would be a
-hand-edited label with no reader, touched on every release including the ones
-that never came near this directory.
+**Why the manifest version mirrors the crate.** The plugin is how the binary is
+distributed: the version names the release to download. A version with no
+release makes the build step fail, so the version is bumped with the crate and
+never ahead of a published release.
 
-**Why the binary is gated on capability, not version.** The build step asks
-`zoe --help` whether it takes `--provider`. A version string is a label: a
-binary built from a checkout carries the crate version of its base release, so
-a floor would refuse a `zoe` that has the flag, while a future release that
-renamed the flag would pass a floor and then fail at the first key press.
-
-**The one rule tying the two release channels together.** A script here may only
-call a `zoe` command line that is already published, because installs take the
-branch while the binary comes from a release. Calling something unreleased would
-break every fresh install until the crate ships.
+**Why the binary is not on `PATH`.** It lives inside the plugin checkout, so it
+cannot shadow or be shadowed by another tool, and uninstalling the plugin
+removes it.
 
 ## 5. Notes on Herdr's API
 
@@ -133,9 +132,11 @@ socket docs at v0.9.0, and live responses.
   whole object is absent until an integration reports a session.
 - `AgentSessionRefKind` is `"id"` or `"path"`. Herdr maps `herdr:claude` and
   `herdr:codex` to an id, reported by each agent's `SessionStart` hook;
-  `herdr:omp` and `herdr:pi` map to a path instead, since their own
+  `herdr:omp` maps to a path instead, since its own
   integration extension already knows the transcript file and there is
-  nothing left to look up. `resolve.sh` hands either kind to `zoe` unchanged.
+  nothing left to look up. `agents-graph herdr resolve` accepts an id for `claude` and `codex` and a
+  path for `omp`, checks that the omp file exists, and exits 2 with a readable
+  message otherwise.
 - `PluginInvocationContext` is flat: `focused_pane_id`, `focused_pane_agent`,
   `focused_pane_cwd`, `focused_pane_status`, `workspace_cwd`, and so on.
 - Action `contexts` are `global`, `workspace`, `tab`, `pane`, `selection`,
@@ -152,16 +153,15 @@ socket docs at v0.9.0, and live responses.
 ## 6. Working on it
 
 ```bash
-herdr plugin link "$(pwd)/herdr-plugin"        # link runs no build step: have zoe on PATH
-herdr plugin action list --plugin furkankly.zoetrope
-herdr plugin log list --plugin furkankly.zoetrope   # where an action's output goes
-herdr pane list | jq '.result.panes[] | {pane_id, agent, agent_session}'
+herdr plugin link "$(pwd)/herdr-plugin"        # link runs no build step: put a binary at herdr-plugin/bin/agents-graph
+herdr plugin action list --plugin m16khb.herdr-agents-graph
+herdr plugin log list --plugin m16khb.herdr-agents-graph   # where an action's output goes
+herdr pane list                                 # .result.panes[]: pane_id, agent, agent_session
 ```
 
 `herdr plugin link` re-reads the manifest, so run it after editing
-`herdr-plugin.toml`. The scripts read Herdr only through `$HERDR_BIN_PATH` and
-`jq`, so they can be exercised without Herdr by putting a stub `herdr` on
-`PATH` that prints a canned `pane.get` response and setting
+`herdr-plugin.toml`. `agents-graph herdr` reads Herdr only through `$HERDR_BIN_PATH`, so it can be
+exercised without Herdr by putting a stub `herdr` there that prints a canned `pane.get` response and setting
 `HERDR_PLUGIN_CONTEXT_JSON` to `{"focused_pane_id":"w1:p1"}`.
 
 Anything asserted here about Herdr's shapes came from the schema or a live

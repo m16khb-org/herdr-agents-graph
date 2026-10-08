@@ -1,4 +1,4 @@
-# zoetrope — Architecture & Principles
+# herdr-agents-graph — Architecture & Principles
 
 This document captures the *why* — the invariants, the recurring principles, and
 the derived-state heuristics that hold the system together. [`DESIGN.md`](DESIGN.md)
@@ -8,7 +8,7 @@ reasoning that governs how those pieces are allowed to behave.
 The whole program solves one hard problem:
 
 > Reconstruct a faithful, navigable, live-or-replayed picture of a coding-agent
-> session (Claude Code, Codex, omp, pi) from an **undocumented, append-only,
+> session (Claude Code, Codex, omp) from an **undocumented, append-only,
 > partially-timestamped, multi-file** transcript — in which **completion is
 > frequently unknowable**.
 

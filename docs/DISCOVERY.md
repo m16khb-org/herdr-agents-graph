@@ -1,6 +1,6 @@
 # Discovery: how a feeder finds a session
 
-The input side of the provider boundary. [ARCHITECTURE.md](ARCHITECTURE.md) §0 fixed the output side: a provider turns records into `Fact`s and nothing past `src/fact.rs` knows the format. This document fixes the other direction, how a feeder gets from what the user pointed at to a set of files with a stream each, and how a session list gets from the disk to sessions. It was written with two providers in hand, Claude Code and Codex, and checked against the storage of the other agents we know of (§7). The code is `src/provider/mod.rs`.
+The input side of the provider boundary. [ARCHITECTURE.md](ARCHITECTURE.md) §0 fixed the output side: a provider turns records into `Fact`s and nothing past `src/fact.rs` knows the format. This document fixes the other direction, how a feeder gets from what the user pointed at to a set of files with a stream each, and how a session list gets from the disk to sessions. It was written with two providers in hand, Claude Code and Codex, extended to omp, and checked against the storage of the other agents we know of (§7). The code is `src/provider/mod.rs`.
 
 The rule, one level above the fact rule:
 
@@ -17,11 +17,11 @@ Feeders see two operations, both in `src/provider/mod.rs`, both written once:
 | Operation | Question | Callers |
 |---|---|---|
 | `open(target, only) -> Result<Session, OpenError>` | One session: its provider, id, and every file of it known right now | replay, follow, `inspect`, herdr (path or id) |
-| `sweep(scope, only) -> Vec<Session>` | Every session under every provider's roots that the scope admits, newest first | `open` by id and by directory, the newer-session auto-switch, and later the rail and `zoe sessions` |
+| `sweep(scope, only) -> Vec<Session>` | Every session under every provider's roots that the scope admits, newest first | `open` by id and by directory, the newer-session auto-switch, and later the rail and `agents-graph sessions` |
 
 `open` is `sweep` narrowed to one session: both feed paths through the same provider question and the same core assembly. The only difference is which paths go in (§4). `only` forces one provider (`--provider`); `None` reads it off the content.
 
-The browser build has no filesystem and uses neither. It receives every file of a session as `(path, text)` and hands them to `tailer::Bundle`, which classifies each with `Provider::session_file_from` (the same answers as `session_file`, from the path and the first line instead of the disk), keeps one stream per tailed file for later appends, and states each sidecar once. So the page never learns a format either.
+The portable core (the library with the `native` feature off) has no filesystem and uses neither. A host there hands `tailer::Bundle` every file of a session as `(path, text)`; the bundle classifies each with `Provider::session_file_from` (the same answers as `session_file`, from the path and the first line instead of the disk), keeps one stream per tailed file for later appends, and states each sidecar once. So a host without a disk never learns a format either.
 
 ---
 
@@ -30,7 +30,7 @@ The browser build has no filesystem and uses neither. It receives every file of 
 ```rust
 // src/provider/mod.rs
 
-pub enum Provider { Claude, Codex, Omp, Pi }
+pub enum Provider { Claude, Codex, Omp }
 
 /// What a provider states about one path. The input-side analogue of `Fact`.
 pub struct SessionFile {
@@ -60,7 +60,7 @@ pub struct Session {
 }
 
 /// One per-file parser. `push` is the whole reading contract.
-pub enum Stream { Claude(claude::Stream), Codex(codex::Stream) }
+pub enum Stream { Claude(claude::Stream), Codex(codex::Stream), Omp(omp::Stream) }
 impl Stream {
     pub fn push(&mut self, line: &str) -> Option<Statement>;
 }
@@ -79,20 +79,20 @@ Enums, not traits. Providers arrive by pull request, never from outside the crat
 
 Each provider implements these in `src/provider/<name>/discovery.rs`, about its own layout only. The core calls them through `impl Provider`, one `match` per method.
 
-| Primitive | Question it answers | Claude Code | Codex | omp / pi |
+| Primitive | Question it answers | Claude Code | Codex | omp |
 |---|---|---|---|---|
-| `provider_of(head: &str) -> Option<Provider>` (free function) | Which provider wrote this text? Reads the first record. | a top-level `type` and no `payload` | first record is `type: "session_meta"`, or any record with a `payload` | omp: `type: "title"` with a `pad`; pi: `type: "session"` with `version`+`cwd` |
-| `all_paths(scope) -> Vec<PathBuf>` | Every path that could be a session file, across the provider's roots. Prunes by the scope where the layout lets it. | `~/.claude/projects/*/<uuid>.jsonl`, roots only; a project scope narrows to one directory, `since` filters by mtime, an id prefix by file stem | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, roots and children; `since` drops whole day directories, an id prefix keeps the rollouts whose name ends in a matching thread id (the root's name carries the session id); a project scope cannot prune, the project is inside the file | `~/.omp/agent/sessions/<project-key>/*.jsonl` or `~/.pi/agent/sessions/<project-key>/*.jsonl`, roots only (both respect `$PI_CODING_AGENT_DIR`/`$PI_CODING_AGENT_SESSION_DIR`, verified against both installed binaries); same pruning as Claude |
-| `session_file(path) -> Option<SessionFile>` | What is this file? Which session, which role, which project, how is it read. | by path: a `.jsonl` in a project directory is `Root`; `<uuid>/subagents/agent-*.jsonl` and `subagents/workflows/<wf>/agent-*.jsonl` are `Agent`; `*.meta.json` is `Sidecar` read `Whole`; `workflows/<wf>/journal.jsonl` is `Sidecar` read `Tail` | by content: the file's own `session_meta`. `thread_source: "user"` is `Root`; `"subagent"` is `Agent { parent: source.subagent.thread_spawn.parent_thread_id }` with `session = session_id` | by path: a `.jsonl` directly under a project-key directory is `Root`; one under a sibling `<ISO-ts>_<uuid>/` directory is `Agent` (omp's spawned-agent transcripts; pi never writes that directory, so this arm never matches a real pi file) |
-| `related_paths(file) -> Vec<PathBuf>` | Where can the rest of this file's session be, root included when `file` is not it? | the root beside the `<uuid>` directory and everything under `<uuid>/subagents/` | from a root: rollouts between its day and the day of its last write, since a child is spawned while the root runs and the root writes after every spawn; from a child: every rollout in the tree, the root may be in an earlier day | the root beside its `<ISO-ts>_<uuid>` directory and every sibling `.jsonl` in it — empty past the root for pi, which never writes that directory |
-| `project_key(cwd) -> String` | How does this provider name a project? | `sanitize_cwd(cwd)`, the directory name under `projects/` | the path itself, as `session_meta.cwd` records it | omp: `cwd` relative to `$HOME` or the temp dir when it is one of those (else wrapped, see pi); pi: always the whole path wrapped, `--path-with-dashes--`. Reverse-engineered from the installed `omp`/`pi` binaries, not guessed |
-| `stream_for(file) -> Stream` | A parser for a tailed file, with whatever cross-line state the format needs | `claude::Stream` over `Source::Main`, `Sub(agent)`, or `Ledger(wf)`, derived from the path; state: the inherited timestamp, and whether the root has been stated | `codex::Stream`; state: the thread id, the root id, the ordinal below which the file is replayed parent history | `pi::Stream`, shared by both providers; state: the inherited timestamp, whether this file's own agent has been announced, and (root only) which spawned names it has already registered |
+| `provider_of(head: &str) -> Option<Provider>` (free function) | Which provider wrote this text? Reads the first record. | a top-level `type` alongside `sessionId` or `uuid` | first record is `type: "session_meta"`, or any record with a `payload` | `type: "title"` with a `pad`, or `type: "session"` with a `version` |
+| `all_paths(scope) -> Vec<PathBuf>` | Every path that could be a session file, across the provider's roots. Prunes by the scope where the layout lets it. | `~/.claude/projects/*/<uuid>.jsonl`, roots only; a project scope narrows to one directory, `since` filters by mtime, an id prefix by file stem | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, roots and children; `since` drops whole day directories, an id prefix keeps the rollouts whose name ends in a matching thread id (the root's name carries the session id); a project scope cannot prune, the project is inside the file | `~/.omp/agent/sessions/<project-key>/*.jsonl`, roots only (`$PI_CODING_AGENT_SESSION_DIR` names the sessions directory, else `$PI_CODING_AGENT_DIR` its parent, and omp's `OMP_` aliases land on those); same pruning as Claude |
+| `session_file(path) -> Option<SessionFile>` | What is this file? Which session, which role, which project, how is it read. | by path: a `.jsonl` in a project directory is `Root`; `<uuid>/subagents/agent-*.jsonl` and `subagents/workflows/<wf>/agent-*.jsonl` are `Agent`; `*.meta.json` is `Sidecar` read `Whole`; `workflows/<wf>/journal.jsonl` is `Sidecar` read `Tail` | by content: the file's own `session_meta`. `thread_source: "user"` is `Root`; `"subagent"` is `Agent { parent: source.subagent.thread_spawn.parent_thread_id }` with `session = session_id` | by path: a `.jsonl` directly under a project-key directory is `Root`; one under a sibling `<ISO-ts>_<uuid>/` directory is `Agent` (omp's spawned-agent transcripts) |
+| `related_paths(file) -> Vec<PathBuf>` | Where can the rest of this file's session be, root included when `file` is not it? | the root beside the `<uuid>` directory and everything under `<uuid>/subagents/` | from a root: rollouts between its day and the day of its last write, since a child is spawned while the root runs and the root writes after every spawn; from a child: every rollout in the tree, the root may be in an earlier day | the root beside its `<ISO-ts>_<uuid>` directory and every sibling `.jsonl` in it |
+| `project_key(cwd) -> String` | How does this provider name a project? | `sanitize_cwd(cwd)`, the directory name under `projects/` | the path itself, as `session_meta.cwd` records it | `cwd` made relative to `$HOME` or the temp dir when it is inside one of those, with `/`, `\` and `:` turned into `-`. Reverse-engineered from the installed `omp` binary, not guessed |
+| `stream_for(file) -> Stream` | A parser for a tailed file, with whatever cross-line state the format needs | `claude::Stream` over `Source::Main`, `Sub(agent)`, or `Ledger(wf)`, derived from the path; state: the inherited timestamp, and whether the root has been stated | `codex::Stream`; state: the thread id, the root id, the ordinal below which the file is replayed parent history | `omp::Stream`; state: the inherited timestamp, whether this file's own agent has been announced, and (root only) which spawned names it has already registered |
 | `sidecar(file, text) -> Option<Statement>` | What does a whole-read sidecar state, once its text parses? | `agent-<id>.meta.json`: the agent's birth, `Stream::meta` | none | none |
 | `session_file_from(path, head) -> Option<SessionFile>` | `session_file` without a filesystem: the path a file came with and its first bytes | by path, as `session_file` | by the first line, as `session_file` | by path, as `session_file` (like Claude — the discrimination is relative-structure, not content) |
 
 Three things these answers show:
 
-- **`project_key` is opaque.** Claude stores a lossy sanitized path, Codex the path, omp/pi a dashed encoding of the path (two different ones — see the table above). The core never compares a key to a directory; it compares a key to `project_key(cwd)`.
+- **`project_key` is opaque.** Claude stores a lossy sanitized path, Codex the path, omp a dashed encoding of the path (see the table above). The core never compares a key to a directory; it compares a key to `project_key(cwd)`.
 - **`related_paths` may over-include.** A Codex date directory holds every session of that day; `session_file` on each path sorts them out. Over-include on layout, let content decide.
 - **`ReadMode` exists because Claude's `meta.json` is one JSON document with no trailing newline.** A line tailer never sees a complete line of it. Whole-read files are read in full each tick until they parse (a mid-write read fails and is retried), then stated once.
 
@@ -142,10 +142,10 @@ What used to be five feeder sites naming `claude::` are these calls. The live ta
 
 - **Replay and follow** (`tailer/replay.rs`, `tailer/live.rs`): `open`, then one `Stream` per tailed file and one `sidecar` statement per whole-read file. Every tick: read appended bytes through each stream, `rescan` for files that appeared, state sidecars that now parse. `Flow::Switch { target, follow }` carries the working directory being followed, so a re-attach after truncation keeps following and a named file or id stays pinned.
 - **`inspect`** (`main.rs`): `open`, read every file, fold. Session-level facts go to the info header whichever record carried them (a Codex root names itself and its app on one line; `Statement::take_session_meta` splits it).
-- **The browser** (`web/wasm`): no filesystem. The page reads files (a drop, an upload, or a directory it may keep re-reading) and passes `[{path, text}]` to `zoetrope_load`; `tailer::Bundle` does the rest through `session_file_from`, `stream_for` and `sidecar`, and `zoetrope_append` continues the same streams. The page's own job is finding files: Claude by the `<uuid>.jsonl` and `<uuid>/subagents/` layout, Codex by reading each rollout's first line, which is `session_file`'s logic written a second time in JavaScript because the page cannot call it before the files are read.
 - **The herdr plugin** (`herdr-plugin/`): asks Herdr which session the focused
-  pane is running, hands `zoe` that id, and `open` does the rest. It is the
-  case `Target::Id` was written for: the id is known, the file is not. See
+  pane is running, hands `agents-graph` that id (or, for omp, the transcript path), and `open`
+  does the rest. It is the case `Target::Id` was written for: the id is known,
+  the file is not. See
   [HERDR-PLUGIN.md](HERDR-PLUGIN.md).
 
 ---
@@ -154,14 +154,14 @@ What used to be five feeder sites naming `claude::` are these calls. The live ta
 
 | Invocation | Resolves to |
 |---|---|
-| `zoe <file>` | `open(Path)`. Provider by content. Works for any provider's root or agent file. |
-| `zoe <id-prefix>` | `open(Id)`. Across every provider's roots; an ambiguous prefix is an error listing the matches. |
-| `zoe` | `open(Here)`: newest session in this project, any provider, then followed. |
-| `zoe <dir>` | `open(Here(dir))`: the same for another project. |
-| `zoe --provider codex ...` | Forces the provider for a path when `provider_of` cannot tell, or restricts an id or directory lookup to one provider. Never the default route. |
-| `zoe inspect <file>` | `open(Path)` rendered as text. |
+| `agents-graph <file>` | `open(Path)`. Provider by content. Works for any provider's root or agent file. |
+| `agents-graph <id-prefix>` | `open(Id)`. Across every provider's roots; an ambiguous prefix is an error listing the matches. |
+| `agents-graph` | `open(Here)`: newest session in this project, any provider, then followed. |
+| `agents-graph <dir>` | `open(Here(dir))`: the same for another project. |
+| `agents-graph --provider codex ...` | Forces the provider for a path when `provider_of` cannot tell, or restricts an id or directory lookup to one provider. Never the default route. |
+| `agents-graph inspect <file>` | `open(Path)` rendered as text. |
 
-Later, with the rail: `zoe sessions` as `sweep` rendered as a table.
+Later, with the rail: `agents-graph sessions` as `sweep` rendered as a table.
 
 ---
 
@@ -169,7 +169,7 @@ Later, with the rail: `zoe sessions` as `sweep` rendered as a table.
 
 The agents whose storage we know fall into three classes:
 
-1. **Append-only JSONL per session.** Claude Code, Codex, omp, pi, Copilot CLI, older Goose. This document covers them fully.
+1. **Append-only JSONL per session.** Claude Code, Codex, omp, Copilot CLI, older Goose. This document covers them fully.
 2. **One JSON document rewritten per turn.** Gemini CLI, Cline and its forks, Amp. Discovery covers them (`related_paths` is empty or a sibling document, `Sidecar` read `Whole` holds the second document where there is one); reading does not, since there is no line to push. Support would add `Stream::push_document`, diffing against the last document, beside `push`. An addition, not a change.
 3. **A database.** OpenCode, Cursor, current Goose. No file per session, nothing to tail. Out of scope. That is a different kind of feeder reading rows, not a wider `SessionFile`.
 
