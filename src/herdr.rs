@@ -286,10 +286,15 @@ mod tests {
             )),
             Ok(("omp", "/home/me/.omp/agent/sessions/-x/a.jsonl".to_string()))
         );
-        // A home-relative path is expanded before it is checked.
+        // A home-relative path is expanded before it is checked. The join uses
+        // the platform separator, so the expected value is built the same way.
+        let expanded = Path::new("/home/me")
+            .join(".omp/agent/sessions/-x/a.jsonl")
+            .display()
+            .to_string();
         assert_eq!(
             resolve_pane(session("omp", "path", "~/.omp/agent/sessions/-x/a.jsonl")),
-            Ok(("omp", "/home/me/.omp/agent/sessions/-x/a.jsonl".to_string()))
+            Ok(("omp", expanded))
         );
 
         // The wrong kind for the agent, a missing file, an agent this plugin
