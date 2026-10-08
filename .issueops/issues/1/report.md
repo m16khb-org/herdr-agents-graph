@@ -1,6 +1,6 @@
-# Issue #1 implementation report (draft)
+# Issue #1 implementation report
 
-Status: in progress (implement done; ai-slop-clean, docs, verify, PR pending)
+Status: implement and ai-slop-clean done; docs, verify, and the draft PR follow
 Lifecycle: io-4b513b64dc69
 Mode/host/model: direct / omp / anthropic/claude-opus-5-5 (high)
 Worktree/branch: /Users/m16khb/Workspace/herdr-agents-graph.worktrees/1-agents-graph-mvp / 1-agents-graph-mvp
@@ -34,7 +34,7 @@ Every intermediate commit from bdd5f36 to 3d32d33 was compiled on its own
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| G1 | `cargo test --locked`: 237 lib + 13 bin + 1 integration (a no-op without AG_REAL_SESSIONS) + 0 doc tests, 0 failed | gates.md G1 |
+| G1 | `cargo test --locked`: 239 lib + 13 bin + 1 integration (a no-op without AG_REAL_SESSIONS) + 0 doc tests, 0 failed | gates.md G1 |
 | G2 | omp root with 12 children auto-detected: 13 agents, 835 tool calls, same as `--provider omp` | gates.md G2, evidence/task-2-omp-inspect.txt |
 | G3 | `provider_of_pins_all_four_formats` passes | gates.md G3 |
 | G4 | 521 MB Codex rollout: peak RSS 36-55 MB (≤ 100 MiB) | gates.md G4, evidence/task-9-bench.txt |
@@ -75,6 +75,71 @@ plugin is uninstalled afterwards (evidence/task-10-herdr-qa*.txt).
   in directories they already trust.
 - Commits were made during implement (not only at commit-push) because T10
   installs the plugin from the pushed branch.
+
+## AI-slop clean
+
+- Dead code: removed `src/autopilot.rs` (476 lines) and its hooks in
+  `src/tui.rs`, `src/main.rs`, `src/lib.rs`, and `docs/DESIGN.md`. It drove a
+  scripted pointer for upstream's VHS recordings behind `AGENTS_GRAPH_DEMO`;
+  the tapes and `assets/build.sh` that used it were removed in the fork.
+- Weak artifacts: `herdr::EXIT_UNRESOLVED` is no longer `pub`; the RedrawGate
+  doc no longer mentions the demo pointer.
+- Unsupported claims: README now says no release exists until `v0.1.0` is
+  tagged (the build step has nothing to download before that) and how to point
+  it at local archives.
+- Measured over `git diff ef49e61 -- src tests benches scripts herdr-plugin/herdr`
+  (added non-blank lines split into code and `//`/`#`/`*` comment lines; an
+  approximate shell count, not AST-backed): before 2446 code + 672 comment
+  added, 438 removed (comment share 0.216); after 2439 code + 667 comment added,
+  964 removed (comment share 0.215). Net change in that scope went from +2905 to
+  +2365 lines.
+- Out of scope, left as is: `cfg!(target_arch = "wasm32")` branches in
+  `src/ui/mod.rs` (upstream's portable core still builds without `native`).
+- Re-verified after the last pass: cargo fmt --check, cargo clippy --all-targets
+  -D warnings, cargo doc -D warnings, cargo check --no-default-features,
+  cargo test --locked (239 + 13 + 1), git diff --check, and all twelve gates
+  re-run from unchecked (12 met).
+
+## Implementation review
+
+Round 1 (reviewer subagent, lenses reuse/perf/compat/side-effect): revise.
+
+- [major] Chunked tail reads applied the 8 MiB runaway-line cap inside a poll,
+  so a complete JSONL line over 8 MiB (the 521 MB rollout has eight Codex tool
+  outputs of 8.5-13.3 MB) was dropped on the live path. Fixed: lines are split
+  per chunk without the cap and only a line still unfinished when the poll ends
+  is capped (`split_lines` + `cap_partial` in src/tailer/bytes.rs). RED first:
+  `a_complete_line_longer_than_the_cap_is_kept` failed before the fix (1 of 2
+  lines), passes after; `an_unfinished_line_past_the_cap_is_dropped_until_its_newline`
+  pins the remaining cap.
+- [minor] toggle forgot the open pane before closing it; a failed close left an
+  unreachable pane. Fixed: the record is removed only after the close succeeds
+  or when the pane is already gone.
+
+## Intent check (intent.md success criteria)
+
+| Criterion | Status |
+| --- | --- |
+| omp pane: key opens main, task subagents and tool calls; same key closes | met: G9, T10 (`● omp`, a done `task` subagent and tool chips drawn) |
+| inspect joins `<Name>.jsonl` children; auto-detect never says Claude | met: G2, G3, omp_demo_conforms |
+| Claude/Codex goldens and `cargo test --locked` pass | met: G1, G12 |
+| every local session file parses: no panic, no abnormal exit | met: G6 (library sweep, 0 failed) and `agents-graph inspect` over all 3150 files: 3026 exit 0, 124 exit 1 with a message (orphaned Codex children, internal subagents, one file without agent activity), 0 panics or signals |
+| 521 MB rollout ≤ 100 MB RSS; 96 MB transcript ≤ 0.3 s | met: G4 (36-55 MB), G11 (0.07-0.08 s) |
+| idle CPU ≤ 0.5 % after 30 s without change | met: G5 (0.23 %, 0.17 %) |
+| omp rename rewrite is followed | met at unit level: G10 `tail_reattaches_after_rename` (replay-seeded state, rename with a longer file, reset then full re-read) |
+| `herdr plugin install` works without jq/cargo/brew and is listed | met with a local `file://` release (G9, T10). The GitHub release does not exist until a `v0.1.0` tag is pushed, which this cycle does not do |
+
+## Performance (this machine, zoetrope 0.2.0 vs agents-graph 0.1.0)
+
+| Measure | zoetrope | agents-graph |
+| --- | --- | --- |
+| inspect 96 MB Claude transcript: wall / peak RSS | 0.08 s / 110 MB | 0.07-0.08 s / 17 MB |
+| inspect 521 MB Codex rollout: wall / peak RSS | 0.17 s / 562 MB | 0.15 s / 36-55 MB |
+| idle CPU, finished demo session, 30 s | 3.4-5.0 % | 0.23-0.33 % |
+| idle CPU, demo copy with a Running main | — | 0.17 % |
+| omp session auto-detect | 1 agent, 0 tool calls (read as Claude) | 13 agents, 835 tool calls |
+
+Sources: evidence/task-9-bench.txt, gates.md G4, G5, G11.
 
 ## Side effects
 

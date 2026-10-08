@@ -23,7 +23,7 @@
 - [x] G6: 이 머신 실세션 전수 파싱 failed=0
   CHECK: python3 .issueops/issues/1/gate.py G6
   EXPECT: PASS G6
-  EVIDENCE: real_sessions: total=3149 failed=0 standalone=123 | PASS G6
+  EVIDENCE: real_sessions: total=3153 failed=0 standalone=123 | PASS G6
 - [x] G7: herdr-plugin 셸 스크립트의 jq 참조 0
   CHECK: python3 .issueops/issues/1/gate.py G7
   EXPECT: PASS G7
@@ -43,7 +43,7 @@
 - [x] G11: 96 MB Claude 세션 inspect real ≤ 0.30 s
   CHECK: python3 .issueops/issues/1/gate.py G11
   EXPECT: PASS G11
-  EVIDENCE: real seconds over 3 runs: [0.2, 0.08, 0.08] (best 0.08), rss 16990208 bytes | PASS G11
+  EVIDENCE: real seconds over 3 runs: [0.2, 0.07, 0.07] (best 0.07), rss 16760832 bytes | PASS G11
 - [x] G12: codex 골든 무변경과 521 MB rollout tokens: 246129
   CHECK: python3 .issueops/issues/1/gate.py G12
   EXPECT: PASS G12
