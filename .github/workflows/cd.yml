@@ -1,0 +1,126 @@
+name: CD
+
+# A pushed `v*` tag builds the binaries, publishes them on the tag's GitHub
+# release, and attaches a SHA256SUMS that herdr-plugin/herdr/install.sh
+# verifies before it installs anything.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The installer downloads the release named by the plugin manifest's
+      # version, so a tag that disagrees with it would publish binaries no
+      # install ever fetches.
+      - name: Check the tag against the manifests
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          plugin=$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin/herdr-plugin.toml | head -1)
+          if [ "$tag" != "$crate" ] || [ "$tag" != "$plugin" ]; then
+            echo "tag v$tag, Cargo.toml $crate, herdr-plugin.toml $plugin must agree" >&2
+            exit 1
+          fi
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build the binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
+
+      # The binary sits at the archive root, which is where the installer
+      # looks for it.
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          tar czf "dist/agents-graph-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" agents-graph \
+            -C "$GITHUB_WORKSPACE" LICENSE NOTICE
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/agents-graph.exe" LICENSE NOTICE dist/
+          (cd dist && 7z a "agents-graph-${{ matrix.target }}.zip" agents-graph.exe LICENSE NOTICE)
+          rm dist/agents-graph.exe dist/LICENSE dist/NOTICE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agents-graph-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: Publish the release with SHA256SUMS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: sha256sum agents-graph-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" --generate-notes

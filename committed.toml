@@ -1,0 +1,19 @@
+# configuration for https://github.com/crate-ci/committed
+
+# https://www.conventionalcommits.org
+style = "conventional"
+# allow merge commits
+merge_commit = true
+# subject is not required to be capitalized
+subject_capitalized = false
+# subject should start with an imperative verb
+imperative_subject = true
+# subject should not end with a punctuation
+subject_not_punctuated = true
+# disable line length
+line_length = 0
+# disable subject length
+subject_length = 0
+# build (release tooling) and ci (workflows) are also commit types here;
+# cliff.toml files both under Miscellaneous Tasks.
+allowed_types = ["fix", "feat", "chore", "docs", "style", "refactor", "perf", "test", "build", "ci"]

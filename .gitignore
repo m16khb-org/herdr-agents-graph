@@ -1,0 +1,13 @@
+/target
+.DS_Store
+
+# The plugin's build step downloads the release binary here; never committed.
+/herdr-plugin/bin/
+
+# IssueOps sealed artifacts and local verification evidence.
+/.issueops/issues/*/artifact/
+/.issueops/evidence/
+
+# Working notes, not part of what ships.
+/TODO.md
+__pycache__/

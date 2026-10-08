@@ -1,0 +1,540 @@
+//! Incremental byte reading.
+//!
+//! Stat a file, read bytes appended past the last offset, split on `\n`, hand
+//! back complete lines, and buffer the trailing partial. Knows nothing about
+//! any format: parsing is the provider's job. `split_lines` and `cap_partial`
+//! are pure over the byte stream (no filesystem), so they are unit-testable
+//! directly.
+//!
+//! Both readers here stream: memory stays at one chunk (or one line) however
+//! large the file is, so only what a provider extracts outlives a read.
+
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
+
+/// Read size for streaming a file: large enough to amortize syscalls, small
+/// enough that a first read of a multi-hundred-MB transcript stays flat.
+const CHUNK: usize = 1 << 20;
+
+/// A single line longer than this (no newline yet) is treated as pathological:
+/// the buffered prefix is dropped and parsing resyncs at the next newline, so a
+/// newline-less or runaway line can never grow `partial` unbounded.
+const MAX_PARTIAL: usize = 8 * 1024 * 1024;
+
+/// Per-file tail position state.
+///
+/// `offset` is the byte position consumed so far; `partial` buffers a trailing
+/// incomplete line until its newline arrives.
+#[derive(Debug, Default)]
+pub struct TailState {
+    pub offset: u64,
+    pub partial: Vec<u8>,
+    /// Set when `partial` blew past [`MAX_PARTIAL`]: skip bytes until the next
+    /// newline, then resync.
+    overflowed: bool,
+    /// `(dev, ino)` of the file last read, to catch replacement rotation where
+    /// the new file is not shorter than the old offset (`None` off unix, or
+    /// before the first read).
+    identity: Option<(u64, u64)>,
+}
+
+/// Outcome of reading appended bytes from a file.
+pub(crate) enum ReadResult {
+    /// File missing or unreadable.
+    Missing,
+    /// No new bytes since last read.
+    NoChange,
+    /// File shrank, or another file was renamed over it — state was reset to
+    /// zero.
+    Reset,
+    /// New bytes were read; their complete lines went to the callback.
+    Read,
+}
+
+/// Stat `path`, read any bytes appended past `state.offset` in [`CHUNK`]-sized
+/// pieces, and hand every newly completed line (CRLF-trimmed, blank and
+/// invalid-UTF-8 lines dropped) to `each`. Detects truncation (`len < offset`)
+/// as well as replacement by a different file (inode change, even to an
+/// equal-or-longer one) and resets the state, returning [`ReadResult::Reset`].
+pub(crate) fn read_appended(
+    path: &Path,
+    state: &mut TailState,
+    each: &mut dyn FnMut(&str),
+) -> ReadResult {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return ReadResult::Missing,
+    };
+    let len = metadata.len();
+    let identity = file_identity(&metadata);
+    let replaced = matches!((identity, state.identity), (Some(new), Some(old)) if new != old);
+
+    if len < state.offset || replaced {
+        // Truncation / rotation: reset everything.
+        state.offset = 0;
+        state.partial.clear();
+        state.overflowed = false;
+        state.identity = identity;
+        return ReadResult::Reset;
+    }
+    // Recorded even when nothing changed, so a state seeded at a byte offset
+    // (or one that has only ever seen an unchanged file) still notices a
+    // rename that brings a different file.
+    state.identity = identity;
+    if len == state.offset {
+        return ReadResult::NoChange;
+    }
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return ReadResult::Missing,
+    };
+    if file.seek(SeekFrom::Start(state.offset)).is_err() {
+        return ReadResult::Missing;
+    }
+    let mut remaining = len - state.offset;
+    let mut chunk = vec![0u8; CHUNK.min(remaining as usize)];
+    while remaining > 0 {
+        let want = chunk.len().min(remaining as usize);
+        let n = match file.read(&mut chunk[..want]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        state.offset += n as u64;
+        remaining -= n as u64;
+        // A line may span chunks, so the cap waits for the end of the read:
+        // only a line still unfinished when the poll ends is a runaway.
+        for line in split_lines(state, &chunk[..n]) {
+            each(&line);
+        }
+    }
+    cap_partial(state);
+    ReadResult::Read
+}
+
+/// Every complete line of `path`, from the start, streamed through `each` one
+/// line at a time. Returns the [`TailState`] a follow-up tail resumes from:
+/// positioned just past the last newline (a trailing newline-less fragment is
+/// a mid-write line, left for the tail to emit once its newline lands) and
+/// carrying the identity of the file that was read, so a rename that replaces
+/// it before the tail's first poll is caught. Unlike the tail, which drops a
+/// line still unfinished past 8 MiB when a poll ends, this reads every line
+/// whole: a bulk read sees each line once.
+pub fn read_lines(path: &Path, each: &mut dyn FnMut(&str)) -> std::io::Result<TailState> {
+    let file = std::fs::File::open(path)?;
+    let identity = file.metadata().ok().and_then(|m| file_identity(&m));
+    let mut reader = BufReader::with_capacity(CHUNK, file);
+    let mut line = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.last() != Some(&b'\n') => break,
+            Ok(n) => {
+                offset += n as u64;
+                if let Some(text) = line_str(&line[..n - 1]) {
+                    each(text);
+                }
+            }
+        }
+    }
+    Ok(TailState {
+        offset,
+        identity,
+        ..TailState::default()
+    })
+}
+
+/// Apply newly appended bytes to a [`TailState`]: return the lines they
+/// complete and buffer the trailing partial line whatever its size (see
+/// [`cap_partial`]).
+fn split_lines(state: &mut TailState, appended: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+
+    for (i, &byte) in appended.iter().enumerate() {
+        if byte == b'\n' {
+            if state.overflowed {
+                // End of the oversized line we were skipping — resync here.
+                state.overflowed = false;
+                state.partial.clear();
+                start = i + 1;
+                continue;
+            }
+            // Complete line = buffered partial + bytes up to (not incl.) '\n'.
+            let line_bytes = &appended[start..i];
+            if state.partial.is_empty() {
+                if let Some(line) = line_of(line_bytes) {
+                    lines.push(line);
+                }
+            } else {
+                state.partial.extend_from_slice(line_bytes);
+                if let Some(line) = line_of(&state.partial) {
+                    lines.push(line);
+                }
+                state.partial.clear();
+            }
+            start = i + 1;
+        }
+    }
+
+    // Buffer the trailing partial (no terminating newline yet) — unless we're
+    // skipping a runaway line.
+    if !state.overflowed && start < appended.len() {
+        state.partial.extend_from_slice(&appended[start..]);
+    }
+
+    lines
+}
+
+/// Drop a buffered partial line that has grown past [`MAX_PARTIAL`] and skip
+/// until its newline, so a newline-less or runaway line cannot grow without
+/// bound.
+fn cap_partial(state: &mut TailState) {
+    if state.partial.len() > MAX_PARTIAL {
+        state.partial.clear();
+        state.overflowed = true;
+    }
+}
+
+/// `(dev, ino)` for rotation detection; `None` on platforms without inodes.
+#[cfg(unix)]
+fn file_identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// A complete line from raw bytes, trimming a trailing `\r` (CRLF tolerance).
+/// Invalid UTF-8 and blank lines are dropped.
+fn line_str(bytes: &[u8]) -> Option<&str> {
+    let bytes = match bytes.last() {
+        Some(b'\r') => &bytes[..bytes.len() - 1],
+        _ => bytes,
+    };
+    let line = std::str::from_utf8(bytes).ok()?;
+    (!line.trim().is_empty()).then_some(line)
+}
+
+fn line_of(bytes: &[u8]) -> Option<String> {
+    line_str(bytes).map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One poll's worth of bytes: split, then cap what is left unfinished.
+    fn consume_bytes(state: &mut TailState, appended: &[u8]) -> Vec<String> {
+        let lines = split_lines(state, appended);
+        cap_partial(state);
+        lines
+    }
+
+    /// [`read_appended`], with the lines it hands out collected.
+    fn read(path: &Path, state: &mut TailState) -> (ReadResult, Vec<String>) {
+        let mut lines = Vec::new();
+        let r = read_appended(path, state, &mut |l| lines.push(l.to_string()));
+        (r, lines)
+    }
+
+    fn is_user(line: &str) -> bool {
+        line.contains("\"type\":\"user\"")
+    }
+
+    #[test]
+    fn consume_complete_lines() {
+        let mut state = TailState::default();
+        let data = b"{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n";
+        let entries = consume_bytes(&mut state, data);
+        assert_eq!(entries.len(), 2);
+        assert!(state.partial.is_empty());
+    }
+
+    #[test]
+    fn consume_partial_then_complete() {
+        let mut state = TailState::default();
+        // First chunk ends mid-line (no trailing newline).
+        let first = consume_bytes(&mut state, b"{\"type\":\"us");
+        assert!(first.is_empty());
+        assert!(!state.partial.is_empty());
+        // Second chunk completes the line.
+        let second = consume_bytes(&mut state, b"er\"}\n");
+        assert_eq!(second.len(), 1);
+        assert!(is_user(&second[0]));
+        assert!(state.partial.is_empty());
+    }
+
+    #[test]
+    fn consume_partial_carried_across_three_chunks() {
+        let mut state = TailState::default();
+        assert!(consume_bytes(&mut state, b"{\"ty").is_empty());
+        assert!(consume_bytes(&mut state, b"pe\":\"system").is_empty());
+        let out = consume_bytes(&mut state, b"\"}\n");
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("\"type\":\"system\""));
+    }
+
+    #[test]
+    fn consume_multiple_with_trailing_partial() {
+        let mut state = TailState::default();
+        let data = b"{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n{\"type\":\"sys";
+        let out = consume_bytes(&mut state, data);
+        assert_eq!(out.len(), 2);
+        assert_eq!(state.partial, b"{\"type\":\"sys");
+    }
+
+    #[test]
+    fn consume_caps_a_runaway_partial_line() {
+        let mut state = TailState::default();
+        // A newline-less chunk past the cap is dropped, not buffered unbounded.
+        let huge = vec![b'x'; super::MAX_PARTIAL + 1];
+        let out = consume_bytes(&mut state, &huge);
+        assert!(out.is_empty());
+        assert!(state.partial.is_empty(), "oversized partial is dropped");
+
+        // More of the runaway line (still no newline) stays dropped.
+        consume_bytes(&mut state, b"more-garbage-no-newline");
+        assert!(state.partial.is_empty());
+
+        // The next newline resyncs; the following line comes through normally.
+        let out = consume_bytes(&mut state, b"tail-of-garbage\n{\"type\":\"user\"}\n");
+        assert_eq!(out.len(), 1, "resynced after the runaway line ended");
+        assert!(is_user(&out[0]));
+    }
+
+    #[test]
+    fn consume_returns_every_line_and_leaves_parsing_to_the_adapter() {
+        let mut state = TailState::default();
+        // The reader knows no format: a non-JSON line is a line like any other,
+        // and dropping it is the provider's call.
+        let out = consume_bytes(&mut state, b"not json at all\n{\"type\":\"user\"}\n");
+        assert_eq!(out, ["not json at all", "{\"type\":\"user\"}"]);
+    }
+
+    #[test]
+    fn consume_tolerates_crlf() {
+        let mut state = TailState::default();
+        let out = consume_bytes(&mut state, b"{\"type\":\"user\"}\r\n");
+        assert_eq!(out.len(), 1);
+        assert!(is_user(&out[0]));
+    }
+
+    #[test]
+    fn read_appended_partial_then_complete_over_tempfile() {
+        use std::io::Write;
+
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!(
+            "agents_graph_tail_test_{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut state = TailState::default();
+
+        // Write a partial line (no newline).
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(b"{\"type\":\"us").unwrap();
+            f.flush().unwrap();
+        }
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.is_empty());
+        assert!(!state.partial.is_empty());
+
+        // Append the completion.
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&tmp).unwrap();
+            f.write_all(b"er\"}\n").unwrap();
+            f.flush().unwrap();
+        }
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read));
+        assert_eq!(v.len(), 1);
+        assert!(is_user(&v[0]));
+        assert!(state.partial.is_empty());
+
+        // No change → NoChange.
+        assert!(matches!(read(&tmp, &mut state).0, ReadResult::NoChange));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn read_appended_truncation_resets() {
+        use std::io::Write;
+
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!(
+            "agents_graph_trunc_test_{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut state = TailState::default();
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(b"{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n")
+                .unwrap();
+        }
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 2);
+        assert!(state.offset > 0);
+
+        // Truncate to a shorter file → reset.
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(b"{\"type\":\"user\"}\n").unwrap();
+        }
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Reset) && v.is_empty());
+        assert_eq!(state.offset, 0);
+        assert!(state.partial.is_empty());
+
+        // Next read picks up from the start of the new (shorter) file.
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 1);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // Rotation is detected by file identity, which only exists on unix:
+    // `file_identity` returns None elsewhere, so a rotated-in longer file is
+    // indistinguishable from an append on Windows. Truncation (`len < offset`)
+    // is still caught everywhere, which the test above covers.
+    #[cfg(unix)]
+    #[test]
+    fn read_appended_detects_rotation_to_longer_file() {
+        use std::io::Write;
+
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!(
+            "agents_graph_rotate_test_{}.jsonl",
+            std::process::id()
+        ));
+        let mut incoming = std::env::temp_dir();
+        incoming.push(format!(
+            "agents_graph_rotate_new_{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&incoming);
+
+        let mut state = TailState::default();
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(b"{\"type\":\"user\"}\n").unwrap();
+        }
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 1);
+
+        // Replace with a DIFFERENT file (new inode) that is longer than the
+        // old offset — the old `len < offset` check alone would read garbage
+        // from mid-file. Renaming a second file over the path is what actually
+        // rotates a log, and it is the only way to guarantee a new inode:
+        // unlink-then-create lets the filesystem hand back the one just freed,
+        // which ext4 routinely does.
+        {
+            let mut f = std::fs::File::create(&incoming).unwrap();
+            f.write_all(b"{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n")
+                .unwrap();
+        }
+        std::fs::rename(&incoming, &tmp).unwrap();
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Reset) && v.is_empty());
+        assert_eq!(state.offset, 0);
+
+        // Next read emits the WHOLE new file, not a mid-file suffix.
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 2);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn truncation_reset_clears_runaway_line_skip() {
+        use std::io::Write;
+
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!(
+            "agents_graph_overflow_test_{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+
+        // A runaway (newline-less, over-cap) line puts the state into
+        // skip-until-newline mode.
+        let mut state = TailState::default();
+        consume_bytes(&mut state, &vec![b'x'; MAX_PARTIAL + 1]);
+        state.offset = (MAX_PARTIAL + 1) as u64;
+
+        // The file is then truncated and rewritten shorter.
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(b"{\"type\":\"user\"}\n").unwrap();
+        }
+        assert!(matches!(read(&tmp, &mut state).0, ReadResult::Reset));
+
+        // The new file's FIRST line must not be swallowed by the stale
+        // overflow skip.
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 1);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Reading in chunks must not turn the cap on an *unfinished* line into a
+    /// cap on every line: a complete line longer than [`MAX_PARTIAL`] (Codex
+    /// writes tool outputs of 8-16 MB) still reaches the parser, as it did
+    /// when the appended range was read in one piece.
+    #[test]
+    fn a_complete_line_longer_than_the_cap_is_kept() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agents_graph_long_line_{}.jsonl",
+            std::process::id()
+        ));
+        let long = format!(
+            "{{\"type\":\"user\",\"pad\":\"{}\"}}",
+            "x".repeat(MAX_PARTIAL + CHUNK)
+        );
+        std::fs::write(&tmp, format!("{long}\n{{\"type\":\"user\"}}\n")).unwrap();
+
+        let mut state = TailState::default();
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read));
+        assert_eq!(v.len(), 2, "both lines, the long one included");
+        assert_eq!(v[0].len(), long.len());
+        assert!(state.partial.is_empty());
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// What is still unfinished when a poll ends is capped as before.
+    #[test]
+    fn an_unfinished_line_past_the_cap_is_dropped_until_its_newline() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agents_graph_long_tail_{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, "x".repeat(MAX_PARTIAL + 1)).unwrap();
+        let mut state = TailState::default();
+        let (_, v) = read(&tmp, &mut state);
+        assert!(v.is_empty());
+        assert!(state.partial.is_empty() && state.overflowed);
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&tmp).unwrap();
+        std::io::Write::write_all(&mut f, b"tail\n{\"type\":\"user\"}\n").unwrap();
+        let (_, v) = read(&tmp, &mut state);
+        assert_eq!(v, vec!["{\"type\":\"user\"}".to_string()]);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+}

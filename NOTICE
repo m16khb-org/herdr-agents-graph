@@ -1,0 +1,12 @@
+herdr-agents-graph
+Copyright (c) 2026 m16khb
+
+This project is a fork of zoetrope by Furkan Kalaycioglu
+(https://github.com/furkankly/zoetrope), imported at commit
+b1f31dd26bd4e9e513885e39edb78d0850a5d1fe and distributed under the MIT
+License. The original copyright notice is kept in LICENSE.
+
+The omp provider (src/provider/omp/) and its fixtures (assets/omp/) start from
+zoetrope pull request #26 by bl-dev0
+(https://github.com/furkankly/zoetrope/pull/26, commit 71e8345), adapted
+here for omp 18.8.4.
