@@ -2,8 +2,9 @@
 //!
 //! Stat a file, read bytes appended past the last offset, split on `\n`, hand
 //! back complete lines, and buffer the trailing partial. Knows nothing about
-//! any format: parsing is the provider's job. [`consume_bytes`] is pure over the
-//! byte stream (no filesystem), so it is unit-testable directly.
+//! any format: parsing is the provider's job. `split_lines` and `cap_partial`
+//! are pure over the byte stream (no filesystem), so they are unit-testable
+//! directly.
 //!
 //! Both readers here stream: memory stays at one chunk (or one line) however
 //! large the file is, so only what a provider extracts outlives a read.
@@ -103,10 +104,13 @@ pub(crate) fn read_appended(
         };
         state.offset += n as u64;
         remaining -= n as u64;
-        for line in consume_bytes(state, &chunk[..n]) {
+        // A line may span chunks, so the cap waits for the end of the read:
+        // only a line still unfinished when the poll ends is a runaway.
+        for line in split_lines(state, &chunk[..n]) {
             each(&line);
         }
     }
+    cap_partial(state);
     ReadResult::Read
 }
 
@@ -116,8 +120,8 @@ pub(crate) fn read_appended(
 /// a mid-write line, left for the tail to emit once its newline lands) and
 /// carrying the identity of the file that was read, so a rename that replaces
 /// it before the tail's first poll is caught. Unlike the tail, which drops a
-/// runaway line past 8 MiB, this reads every line whole: a bulk read sees each
-/// line once.
+/// line still unfinished past 8 MiB when a poll ends, this reads every line
+/// whole: a bulk read sees each line once.
 pub fn read_lines(path: &Path, each: &mut dyn FnMut(&str)) -> std::io::Result<TailState> {
     let file = std::fs::File::open(path)?;
     let identity = file.metadata().ok().and_then(|m| file_identity(&m));
@@ -144,11 +148,10 @@ pub fn read_lines(path: &Path, each: &mut dyn FnMut(&str)) -> std::io::Result<Ta
     })
 }
 
-/// Apply newly appended bytes to a [`TailState`], returning the parsed entries
-/// from now-complete lines and buffering any trailing partial line.
-///
-/// Pure over the byte stream so it can be unit-tested without a filesystem.
-pub(crate) fn consume_bytes(state: &mut TailState, appended: &[u8]) -> Vec<String> {
+/// Apply newly appended bytes to a [`TailState`]: return the lines they
+/// complete and buffer the trailing partial line whatever its size (see
+/// [`cap_partial`]).
+fn split_lines(state: &mut TailState, appended: &[u8]) -> Vec<String> {
     let mut lines = Vec::new();
     let mut start = 0;
 
@@ -179,16 +182,22 @@ pub(crate) fn consume_bytes(state: &mut TailState, appended: &[u8]) -> Vec<Strin
     }
 
     // Buffer the trailing partial (no terminating newline yet) — unless we're
-    // skipping a runaway line, or it would blow past the cap (drop + resync).
+    // skipping a runaway line.
     if !state.overflowed && start < appended.len() {
         state.partial.extend_from_slice(&appended[start..]);
-        if state.partial.len() > MAX_PARTIAL {
-            state.partial.clear();
-            state.overflowed = true;
-        }
     }
 
     lines
+}
+
+/// Drop a buffered partial line that has grown past [`MAX_PARTIAL`] and skip
+/// until its newline, so a newline-less or runaway line cannot grow without
+/// bound.
+fn cap_partial(state: &mut TailState) {
+    if state.partial.len() > MAX_PARTIAL {
+        state.partial.clear();
+        state.overflowed = true;
+    }
 }
 
 /// `(dev, ino)` for rotation detection; `None` on platforms without inodes.
@@ -221,6 +230,13 @@ fn line_of(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One poll's worth of bytes: split, then cap what is left unfinished.
+    fn consume_bytes(state: &mut TailState, appended: &[u8]) -> Vec<String> {
+        let lines = split_lines(state, appended);
+        cap_partial(state);
+        lines
+    }
 
     /// [`read_appended`], with the lines it hands out collected.
     fn read(path: &Path, state: &mut TailState) -> (ReadResult, Vec<String>) {
@@ -471,6 +487,53 @@ mod tests {
         // overflow skip.
         let (r, v) = read(&tmp, &mut state);
         assert!(matches!(r, ReadResult::Read) && v.len() == 1);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Reading in chunks must not turn the cap on an *unfinished* line into a
+    /// cap on every line: a complete line longer than [`MAX_PARTIAL`] (Codex
+    /// writes tool outputs of 8-16 MB) still reaches the parser, as it did
+    /// when the appended range was read in one piece.
+    #[test]
+    fn a_complete_line_longer_than_the_cap_is_kept() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agents_graph_long_line_{}.jsonl",
+            std::process::id()
+        ));
+        let long = format!(
+            "{{\"type\":\"user\",\"pad\":\"{}\"}}",
+            "x".repeat(MAX_PARTIAL + CHUNK)
+        );
+        std::fs::write(&tmp, format!("{long}\n{{\"type\":\"user\"}}\n")).unwrap();
+
+        let mut state = TailState::default();
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read));
+        assert_eq!(v.len(), 2, "both lines, the long one included");
+        assert_eq!(v[0].len(), long.len());
+        assert!(state.partial.is_empty());
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// What is still unfinished when a poll ends is capped as before.
+    #[test]
+    fn an_unfinished_line_past_the_cap_is_dropped_until_its_newline() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agents_graph_long_tail_{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, "x".repeat(MAX_PARTIAL + 1)).unwrap();
+        let mut state = TailState::default();
+        let (_, v) = read(&tmp, &mut state);
+        assert!(v.is_empty());
+        assert!(state.partial.is_empty() && state.overflowed);
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&tmp).unwrap();
+        std::io::Write::write_all(&mut f, b"tail\n{\"type\":\"user\"}\n").unwrap();
+        let (_, v) = read(&tmp, &mut state);
+        assert_eq!(v, vec!["{\"type\":\"user\"}".to_string()]);
 
         let _ = std::fs::remove_file(&tmp);
     }
