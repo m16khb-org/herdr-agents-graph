@@ -65,11 +65,13 @@ pub(crate) struct LiveSession {
     /// Consecutive poll ticks with NO activity (no appended bytes anywhere).
     /// Gates auto-switch so two concurrently-written sessions can't leapfrog.
     idle_ticks: u32,
-    /// Byte offsets captured by a replay bulk snapshot, consumed when each file
-    /// is first registered for tailing — so the tail resumes exactly where the
-    /// snapshot stopped reading instead of at the live EOF (which would drop
-    /// lines appended during the bulk parse).
-    seed_offsets: HashMap<PathBuf, u64>,
+    /// Tail states captured by a replay bulk snapshot (byte offset plus the
+    /// identity of the file read), consumed when each file is first
+    /// registered for tailing — so the tail resumes exactly where the snapshot
+    /// stopped reading instead of at the live EOF (which would drop lines
+    /// appended during the bulk parse), and a file renamed over in between is
+    /// re-read instead of read from a stale offset.
+    seed_states: HashMap<PathBuf, TailState>,
     /// The streams the bulk parse used, adopted alongside the offsets.
     seed_streams: HashMap<PathBuf, Stream>,
 }
@@ -78,8 +80,9 @@ pub(crate) struct LiveSession {
 /// bulk snapshot, used to seed a [`LiveSession`] via [`LiveSession::seed`].
 #[derive(Debug, Default)]
 pub(crate) struct SnapshotSeed {
-    /// Bytes of each file consumed by the bulk parse (up to its last newline).
-    pub(crate) offsets: HashMap<PathBuf, u64>,
+    /// Where the bulk parse stopped in each file (just past its last newline)
+    /// and which file it read there.
+    pub(crate) states: HashMap<PathBuf, TailState>,
     /// The stream that parsed each file, carrying whatever it learned from
     /// the lines before the offset. A Codex stream learns whose file it is
     /// from the first line; a fresh one resumed mid-file would state nothing.
@@ -103,7 +106,7 @@ impl LiveSession {
             seen_whole: HashSet::new(),
             ticks: 0,
             idle_ticks: 0,
-            seed_offsets: HashMap::new(),
+            seed_states: HashMap::new(),
             seed_streams: HashMap::new(),
         }
     }
@@ -116,19 +119,19 @@ impl LiveSession {
         &self.session.root.path
     }
 
-    /// Adopt a replay bulk snapshot's read positions: the root offset applies
-    /// immediately, other offsets when each file is first registered, and
+    /// Adopt a replay bulk snapshot's read positions: the root state applies
+    /// immediately, other states when each file is first registered, and
     /// bulk-stated sidecars are marked seen. Everything the snapshot did NOT
     /// consume — appends during the parse, files created since — is emitted by
     /// the subsequent tail polls.
     pub(crate) fn seed(&mut self, mut seed: SnapshotSeed) {
-        if let Some(off) = seed.offsets.get(self.root_path()) {
-            self.main_state.offset = *off;
+        if let Some(state) = seed.states.remove(self.root_path()) {
+            self.main_state = state;
         }
         if let Some(stream) = seed.streams.remove(self.root_path()) {
             self.main_stream = stream;
         }
-        self.seed_offsets = seed.offsets;
+        self.seed_states = seed.states;
         self.seed_streams = seed.streams;
         self.seen_whole = seed.seen_whole;
     }
@@ -139,10 +142,7 @@ impl LiveSession {
         if self.tracked.contains_key(&file.path) {
             return;
         }
-        let mut state = TailState::default();
-        if let Some(off) = self.seed_offsets.remove(&file.path) {
-            state.offset = off;
-        }
+        let state = self.seed_states.remove(&file.path).unwrap_or_default();
         let stream = self
             .seed_streams
             .remove(&file.path)
@@ -285,7 +285,11 @@ async fn poll_live(
 
     // --- root file ---
     let root_path = session.root_path().to_path_buf();
-    match read_appended(&root_path, &mut session.main_state) {
+    let main_stream = &mut session.main_stream;
+    let root = read_appended(&root_path, &mut session.main_state, &mut |l| {
+        statements.extend(main_stream.push(l));
+    });
+    match root {
         ReadResult::Reset => {
             let _ = ui_tx
                 .send(UiEvent::SessionReset {
@@ -300,10 +304,7 @@ async fn poll_live(
             // liveness.
             return Some(session.reattach());
         }
-        ReadResult::Lines(lines) => {
-            statements.extend(lines.iter().filter_map(|l| session.main_stream.push(l)));
-        }
-        ReadResult::NoChange | ReadResult::Missing => {}
+        ReadResult::Read | ReadResult::NoChange | ReadResult::Missing => {}
     }
 
     // --- the session's other files: known ones and any that appeared ---
@@ -389,12 +390,9 @@ fn read_tracked(
 ) -> bool {
     let mut reset = false;
     for (path, (stream, state)) in tracked.iter_mut() {
-        match read_appended(path, state) {
-            ReadResult::Lines(lines) => {
-                statements.extend(lines.iter().filter_map(|l| stream.push(l)));
-            }
-            ReadResult::Reset => reset = true,
-            ReadResult::NoChange | ReadResult::Missing => {}
+        let mut push = |l: &str| statements.extend(stream.push(l));
+        if let ReadResult::Reset = read_appended(path, state, &mut push) {
+            reset = true;
         }
     }
     reset

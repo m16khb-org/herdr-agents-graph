@@ -183,18 +183,24 @@ fn parse_session_fully(
         }
     };
     // Order is not critical — the model is fold-order independent — so files
-    // go in as the session lists them, root first.
+    // go in as the session lists them, root first. Transcripts are streamed a
+    // line at a time: memory follows what the model keeps, not the file size.
+    // A newline-less last line is a write in progress and is left out, as the
+    // tailer leaves it.
     for f in session.every_file() {
-        let text = std::fs::read_to_string(&f.path)
-            .with_context(|| format!("reading {}", f.path.display()))?;
+        let context = || format!("reading {}", f.path.display());
         match f.read {
             ReadMode::Tail => {
                 let mut stream = p.stream_for(f);
-                for statement in text.lines().filter_map(|l| stream.push(l)) {
-                    apply(statement);
-                }
+                tailer::read_lines(&f.path, &mut |line| {
+                    if let Some(statement) = stream.push(line) {
+                        apply(statement);
+                    }
+                })
+                .with_context(context)?;
             }
             ReadMode::Whole => {
+                let text = std::fs::read_to_string(&f.path).with_context(context)?;
                 if let Some(statement) = p.sidecar(f, &text) {
                     apply(statement);
                 }

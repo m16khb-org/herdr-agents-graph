@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::provider::{Provider, ReadMode, Session, Stream, Target, open};
 
+use super::bytes::{TailState, read_lines};
 use super::item::{ReplayItem, date_and_sort};
 use super::live::{LiveSession, SnapshotSeed, tail_loop};
 use super::{Flow, TailRequest, UiEvent};
@@ -105,8 +106,8 @@ pub(crate) fn build_replay(
         match file.read {
             ReadMode::Tail => {
                 let mut stream = p.stream_for(file);
-                let consumed = parse_file_into(&file.path, &mut stream, &mut items);
-                seed.offsets.insert(file.path.clone(), consumed);
+                let state = parse_file_into(&file.path, &mut stream, &mut items);
+                seed.states.insert(file.path.clone(), state);
                 seed.streams.insert(file.path.clone(), stream);
             }
             // A whole-read sidecar states its facts once it parses; one that
@@ -134,26 +135,16 @@ pub(crate) fn build_replay(
     (items, info, seed)
 }
 
-/// Parse all complete lines of a file into [`ReplayItem`]s through `stream`.
-/// Returns the number of bytes consumed — up to and including the last
-/// newline; a trailing newline-less fragment is a mid-write line, left for the
-/// follow-up tail to emit once its newline lands.
-fn parse_file_into(path: &Path, stream: &mut Stream, items: &mut Vec<ReplayItem>) -> u64 {
-    let Ok(bytes) = std::fs::read(path) else {
-        return 0;
-    };
-    let consumed = bytes
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let text = String::from_utf8_lossy(&bytes[..consumed]);
-    items.extend(
-        text.lines()
-            .filter_map(|l| stream.push(l))
-            .map(ReplayItem::new),
-    );
-    consumed as u64
+/// Parse all complete lines of a file into [`ReplayItem`]s through `stream`,
+/// streaming it so only the statements stay in memory. Returns the tail state
+/// just past the last newline — a trailing newline-less fragment is a
+/// mid-write line, left for the follow-up tail to emit once its newline
+/// lands. An unreadable file yields nothing and a fresh state.
+fn parse_file_into(path: &Path, stream: &mut Stream, items: &mut Vec<ReplayItem>) -> TailState {
+    read_lines(path, &mut |line| {
+        items.extend(stream.push(line).map(ReplayItem::new));
+    })
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -239,6 +230,100 @@ mod tests {
             meta_pos < sub_entry,
             "meta must precede the agent's entries"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session dir holding one root transcript whose bytes are `body`.
+    fn one_file_session(tag: &str, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("agents_graph_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("33333333-3333-3333-3333-333333333333.jsonl");
+        std::fs::write(&main, body).unwrap();
+        (dir, main)
+    }
+
+    const U1: &str = r#"{"type":"user","uuid":"u1","sessionId":"s","timestamp":"2026-06-05T10:00:00.000Z","message":{"role":"user","content":"one"}}"#;
+    const U2: &str = r#"{"type":"user","uuid":"u2","sessionId":"s","timestamp":"2026-06-05T10:01:00.000Z","message":{"role":"user","content":"two"}}"#;
+    const U3: &str = r#"{"type":"user","uuid":"u3","sessionId":"s","timestamp":"2026-06-05T10:02:00.000Z","message":{"role":"user","content":"three"}}"#;
+
+    /// omp rewrites a transcript by renaming a new file over it (title change,
+    /// session switch). The tail that follows a replay must notice even when
+    /// the rename lands before its first poll and the new file is longer than
+    /// the replayed offset — reading on from that offset would splice the
+    /// middle of a different file onto the model.
+    #[cfg(unix)]
+    #[test]
+    fn tail_reattaches_after_rename() {
+        use crate::tailer::bytes::{ReadResult, read_appended};
+
+        let (dir, main) = one_file_session("rename", &format!("{U1}\n"));
+        let session = open(&Target::Path(main.clone()), None).unwrap();
+        let (_items, _info, mut seed) = build_replay(&session);
+        let mut state = seed.states.remove(&main).unwrap();
+
+        let incoming = dir.join("incoming.tmp");
+        std::fs::write(&incoming, format!("{U2}\n{U3}\n{U1}\n")).unwrap();
+        std::fs::rename(&incoming, &main).unwrap();
+
+        let mut seen = Vec::new();
+        let r = read_appended(&main, &mut state, &mut |l| seen.push(l.to_string()));
+        assert!(
+            matches!(r, ReadResult::Reset),
+            "a renamed-over file is a reset"
+        );
+        assert!(seen.is_empty());
+
+        let r = read_appended(&main, &mut state, &mut |l| seen.push(l.to_string()));
+        assert!(matches!(r, ReadResult::Read));
+        assert_eq!(
+            seen,
+            vec![U2, U3, U1],
+            "the new file is read from its start"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line still being written when the replay reads is left for the tail,
+    /// which emits it exactly once when its newline lands.
+    #[test]
+    fn replay_leaves_a_cut_line_for_the_tail() {
+        use crate::tailer::bytes::{ReadResult, read_appended};
+        use std::io::Write;
+
+        let (cut, rest) = U2.split_at(40);
+        let (dir, main) = one_file_session("cut", &format!("{U1}\n{cut}"));
+        let session = open(&Target::Path(main.clone()), None).unwrap();
+        let (items, _info, mut seed) = build_replay(&session);
+        let mut state = seed.states.remove(&main).unwrap();
+        assert_eq!(state.offset, U1.len() as u64 + 1);
+        let prompts = |items: &[ReplayItem]| {
+            items
+                .iter()
+                .filter(|i| i.any(|f| matches!(f.kind, FactKind::Prompt(_))))
+                .count()
+        };
+        assert_eq!(prompts(&items), 1);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&main)
+            .unwrap()
+            .write_all(format!("{rest}\n").as_bytes())
+            .unwrap();
+        let mut seen = Vec::new();
+        assert!(matches!(
+            read_appended(&main, &mut state, &mut |l| seen.push(l.to_string())),
+            ReadResult::Read
+        ));
+        assert_eq!(seen, vec![U2]);
+        assert!(matches!(
+            read_appended(&main, &mut state, &mut |l| seen.push(l.to_string())),
+            ReadResult::NoChange
+        ));
+        assert_eq!(seen.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

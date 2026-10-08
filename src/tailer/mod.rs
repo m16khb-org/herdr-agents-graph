@@ -48,6 +48,8 @@ pub(crate) use item::date_and_sort_live;
 #[cfg(feature = "native")]
 mod bytes;
 #[cfg(feature = "native")]
+pub use bytes::{TailState, read_lines};
+#[cfg(feature = "native")]
 mod live;
 #[cfg(feature = "native")]
 mod replay;

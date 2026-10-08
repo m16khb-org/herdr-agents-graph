@@ -4,8 +4,16 @@
 //! back complete lines, and buffer the trailing partial. Knows nothing about
 //! any format: parsing is the provider's job. [`consume_bytes`] is pure over the
 //! byte stream (no filesystem), so it is unit-testable directly.
+//!
+//! Both readers here stream: memory stays at one chunk (or one line) however
+//! large the file is, so only what a provider extracts outlives a read.
 
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+
+/// Read size for streaming a file: large enough to amortize syscalls, small
+/// enough that a first read of a multi-hundred-MB transcript stays flat.
+const CHUNK: usize = 1 << 20;
 
 /// A single line longer than this (no newline yet) is treated as pathological:
 /// the buffered prefix is dropped and parsing resyncs at the next newline, so a
@@ -35,20 +43,23 @@ pub(crate) enum ReadResult {
     Missing,
     /// No new bytes since last read.
     NoChange,
-    /// File shrank (truncation/rotation) — state was reset to zero.
+    /// File shrank, or another file was renamed over it — state was reset to
+    /// zero.
     Reset,
-    /// Newly completed lines from appended bytes (CRLF-trimmed, blank lines
-    /// dropped).
-    Lines(Vec<String>),
+    /// New bytes were read; their complete lines went to the callback.
+    Read,
 }
 
-/// Stat `path`, read any bytes appended past `state.offset`, and feed them
-/// through [`consume_bytes`]. Detects truncation (`len < offset`) as well as
-/// replacement by a different file (inode change, even to an equal-or-longer
-/// one) and resets the state, returning [`ReadResult::Reset`].
-pub(crate) fn read_appended(path: &Path, state: &mut TailState) -> ReadResult {
-    use std::io::{Read, Seek, SeekFrom};
-
+/// Stat `path`, read any bytes appended past `state.offset` in [`CHUNK`]-sized
+/// pieces, and hand every newly completed line (CRLF-trimmed, blank and
+/// invalid-UTF-8 lines dropped) to `each`. Detects truncation (`len < offset`)
+/// as well as replacement by a different file (inode change, even to an
+/// equal-or-longer one) and resets the state, returning [`ReadResult::Reset`].
+pub(crate) fn read_appended(
+    path: &Path,
+    state: &mut TailState,
+    each: &mut dyn FnMut(&str),
+) -> ReadResult {
     let metadata = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(_) => return ReadResult::Missing,
@@ -65,10 +76,13 @@ pub(crate) fn read_appended(path: &Path, state: &mut TailState) -> ReadResult {
         state.identity = identity;
         return ReadResult::Reset;
     }
+    // Recorded even when nothing changed, so a state seeded at a byte offset
+    // (or one that has only ever seen an unchanged file) still notices a
+    // rename that brings a different file.
+    state.identity = identity;
     if len == state.offset {
         return ReadResult::NoChange;
     }
-    state.identity = identity;
 
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -77,16 +91,57 @@ pub(crate) fn read_appended(path: &Path, state: &mut TailState) -> ReadResult {
     if file.seek(SeekFrom::Start(state.offset)).is_err() {
         return ReadResult::Missing;
     }
-    let to_read = (len - state.offset) as usize;
-    let mut buf = vec![0u8; to_read];
-    let n = match file.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return ReadResult::Missing,
-    };
-    buf.truncate(n);
-    state.offset += n as u64;
+    let mut remaining = len - state.offset;
+    let mut chunk = vec![0u8; CHUNK.min(remaining as usize)];
+    while remaining > 0 {
+        let want = chunk.len().min(remaining as usize);
+        let n = match file.read(&mut chunk[..want]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        state.offset += n as u64;
+        remaining -= n as u64;
+        for line in consume_bytes(state, &chunk[..n]) {
+            each(&line);
+        }
+    }
+    ReadResult::Read
+}
 
-    ReadResult::Lines(consume_bytes(state, &buf))
+/// Every complete line of `path`, from the start, streamed through `each` one
+/// line at a time. Returns the [`TailState`] a follow-up tail resumes from:
+/// positioned just past the last newline (a trailing newline-less fragment is
+/// a mid-write line, left for the tail to emit once its newline lands) and
+/// carrying the identity of the file that was read, so a rename that replaces
+/// it before the tail's first poll is caught. Unlike the tail, which drops a
+/// runaway line past 8 MiB, this reads every line whole: a bulk read sees each
+/// line once.
+pub fn read_lines(path: &Path, each: &mut dyn FnMut(&str)) -> std::io::Result<TailState> {
+    let file = std::fs::File::open(path)?;
+    let identity = file.metadata().ok().and_then(|m| file_identity(&m));
+    let mut reader = BufReader::with_capacity(CHUNK, file);
+    let mut line = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.last() != Some(&b'\n') => break,
+            Ok(n) => {
+                offset += n as u64;
+                if let Some(text) = line_str(&line[..n - 1]) {
+                    each(text);
+                }
+            }
+        }
+    }
+    Ok(TailState {
+        offset,
+        identity,
+        ..TailState::default()
+    })
 }
 
 /// Apply newly appended bytes to a [`TailState`], returning the parsed entries
@@ -150,18 +205,29 @@ fn file_identity(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
 
 /// A complete line from raw bytes, trimming a trailing `\r` (CRLF tolerance).
 /// Invalid UTF-8 and blank lines are dropped.
-fn line_of(bytes: &[u8]) -> Option<String> {
+fn line_str(bytes: &[u8]) -> Option<&str> {
     let bytes = match bytes.last() {
         Some(b'\r') => &bytes[..bytes.len() - 1],
         _ => bytes,
     };
     let line = std::str::from_utf8(bytes).ok()?;
-    (!line.trim().is_empty()).then(|| line.to_string())
+    (!line.trim().is_empty()).then_some(line)
+}
+
+fn line_of(bytes: &[u8]) -> Option<String> {
+    line_str(bytes).map(str::to_string)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`read_appended`], with the lines it hands out collected.
+    fn read(path: &Path, state: &mut TailState) -> (ReadResult, Vec<String>) {
+        let mut lines = Vec::new();
+        let r = read_appended(path, state, &mut |l| lines.push(l.to_string()));
+        (r, lines)
+    }
 
     fn is_user(line: &str) -> bool {
         line.contains("\"type\":\"user\"")
@@ -250,7 +316,10 @@ mod tests {
         use std::io::Write;
 
         let mut tmp = std::env::temp_dir();
-        tmp.push(format!("agents_graph_tail_test_{}.jsonl", std::process::id()));
+        tmp.push(format!(
+            "agents_graph_tail_test_{}.jsonl",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&tmp);
 
         let mut state = TailState::default();
@@ -261,8 +330,8 @@ mod tests {
             f.write_all(b"{\"type\":\"us").unwrap();
             f.flush().unwrap();
         }
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Lines(ref v) if v.is_empty()));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.is_empty());
         assert!(!state.partial.is_empty());
 
         // Append the completion.
@@ -271,21 +340,14 @@ mod tests {
             f.write_all(b"er\"}\n").unwrap();
             f.flush().unwrap();
         }
-        let r = read_appended(&tmp, &mut state);
-        match r {
-            ReadResult::Lines(v) => {
-                assert_eq!(v.len(), 1);
-                assert!(is_user(&v[0]));
-            }
-            _ => panic!("expected entries"),
-        }
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read));
+        assert_eq!(v.len(), 1);
+        assert!(is_user(&v[0]));
         assert!(state.partial.is_empty());
 
         // No change → NoChange.
-        assert!(matches!(
-            read_appended(&tmp, &mut state),
-            ReadResult::NoChange
-        ));
+        assert!(matches!(read(&tmp, &mut state).0, ReadResult::NoChange));
 
         let _ = std::fs::remove_file(&tmp);
     }
@@ -295,7 +357,10 @@ mod tests {
         use std::io::Write;
 
         let mut tmp = std::env::temp_dir();
-        tmp.push(format!("agents_graph_trunc_test_{}.jsonl", std::process::id()));
+        tmp.push(format!(
+            "agents_graph_trunc_test_{}.jsonl",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&tmp);
 
         let mut state = TailState::default();
@@ -304,8 +369,8 @@ mod tests {
             f.write_all(b"{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n")
                 .unwrap();
         }
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Lines(ref v) if v.len() == 2));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 2);
         assert!(state.offset > 0);
 
         // Truncate to a shorter file → reset.
@@ -313,14 +378,14 @@ mod tests {
             let mut f = std::fs::File::create(&tmp).unwrap();
             f.write_all(b"{\"type\":\"user\"}\n").unwrap();
         }
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Reset));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Reset) && v.is_empty());
         assert_eq!(state.offset, 0);
         assert!(state.partial.is_empty());
 
         // Next read picks up from the start of the new (shorter) file.
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Lines(ref v) if v.len() == 1));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 1);
 
         let _ = std::fs::remove_file(&tmp);
     }
@@ -335,9 +400,15 @@ mod tests {
         use std::io::Write;
 
         let mut tmp = std::env::temp_dir();
-        tmp.push(format!("agents_graph_rotate_test_{}.jsonl", std::process::id()));
+        tmp.push(format!(
+            "agents_graph_rotate_test_{}.jsonl",
+            std::process::id()
+        ));
         let mut incoming = std::env::temp_dir();
-        incoming.push(format!("agents_graph_rotate_new_{}.jsonl", std::process::id()));
+        incoming.push(format!(
+            "agents_graph_rotate_new_{}.jsonl",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(&incoming);
 
@@ -346,8 +417,8 @@ mod tests {
             let mut f = std::fs::File::create(&tmp).unwrap();
             f.write_all(b"{\"type\":\"user\"}\n").unwrap();
         }
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Lines(ref v) if v.len() == 1));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 1);
 
         // Replace with a DIFFERENT file (new inode) that is longer than the
         // old offset — the old `len < offset` check alone would read garbage
@@ -361,13 +432,13 @@ mod tests {
                 .unwrap();
         }
         std::fs::rename(&incoming, &tmp).unwrap();
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Reset));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Reset) && v.is_empty());
         assert_eq!(state.offset, 0);
 
         // Next read emits the WHOLE new file, not a mid-file suffix.
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Lines(ref v) if v.len() == 2));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 2);
 
         let _ = std::fs::remove_file(&tmp);
     }
@@ -394,12 +465,12 @@ mod tests {
             let mut f = std::fs::File::create(&tmp).unwrap();
             f.write_all(b"{\"type\":\"user\"}\n").unwrap();
         }
-        assert!(matches!(read_appended(&tmp, &mut state), ReadResult::Reset));
+        assert!(matches!(read(&tmp, &mut state).0, ReadResult::Reset));
 
         // The new file's FIRST line must not be swallowed by the stale
         // overflow skip.
-        let r = read_appended(&tmp, &mut state);
-        assert!(matches!(r, ReadResult::Lines(ref v) if v.len() == 1));
+        let (r, v) = read(&tmp, &mut state);
+        assert!(matches!(r, ReadResult::Read) && v.len() == 1);
 
         let _ = std::fs::remove_file(&tmp);
     }
