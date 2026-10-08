@@ -10,3 +10,4 @@
 
 # Working notes, not part of what ships.
 /TODO.md
+__pycache__/
