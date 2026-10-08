@@ -186,44 +186,184 @@ def herdr(*args):
     return json.loads(out) if out.strip().startswith("{") else out
 
 
-def panes():
-    return herdr("pane", "list")["result"]["panes"]
+def rpc(method, params):
+    """One request on herdr's socket. `plugin.action.invoke` here can name
+    the pane it is invoked for, which the CLI cannot, so nothing has to steal
+    focus to aim the action."""
+    import socket
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(30)
+    s.connect(os.environ.get("HERDR_SOCKET_PATH", f"{HOME}/.config/herdr/herdr.sock"))
+    s.sendall((json.dumps({"id": "ag-qa", "method": method, "params": params}) + "\n").encode())
+    buf = b""
+    while not buf.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    return json.loads(buf)
 
 
-def g9():
-    """Install from the pushed branch with a file:// release, toggle the graph
-    over this session's own omp pane twice, then uninstall."""
+def graph_panes():
+    return [p["pane_id"] for p in herdr("pane", "list")["result"]["panes"] if p.get("label") == "agents-graph"]
+
+
+def wait_for(check, seconds=15):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        value = check()
+        if value:
+            return value
+        time.sleep(0.5)
+    return check()
+
+
+def toggle_twice(target, agent):
+    """Press `open` for `target` twice: the first press should add one graph
+    pane whose main card is the `agent` session (`● omp`, `● claude`, ...),
+    the second should remove it."""
+    before = set(graph_panes())
+    invoke = {"plugin_id": PLUGIN_ID, "action_id": "open", "context": {"focused_pane_id": target}}
+    answer = rpc("plugin.action.invoke", invoke)
+    print(f"press 1 for {target}: {json.dumps(answer)[:160]}")
+    opened = wait_for(lambda: [p for p in graph_panes() if p not in before])
+    card = re.compile(rf"[●◌✓✗■] {agent}\b")
+    shows_main = False
+    if opened:
+        text = wait_for(lambda: card.search(herdr("pane", "read", opened[0])) and herdr("pane", "read", opened[0]), 20)
+        lines = [l.strip(" │") for l in str(text).splitlines() if card.search(l)]
+        shows_main = bool(lines)
+        print(f"  graph pane {opened}, main card: {lines[:1]}")
+    rpc("plugin.action.invoke", invoke)
+    closed = wait_for(lambda: not [p for p in graph_panes() if p not in before])
+    print(f"press 2: graph pane gone={closed}")
+    return len(opened) == 1 and shows_main and closed
+
+
+def install_from_branch():
     branch = run(["git", "branch", "--show-current"])[1].strip()
-    own = os.environ["HERDR_PANE_ID"]
     fake_release("/tmp/fake-release", tamper=False)
     env = dict(os.environ, AG_RELEASE_BASE="file:///tmp/fake-release")
     run(["herdr", "plugin", "uninstall", PLUGIN_ID], timeout=120)
     rc, out, err = run(
-        ["herdr", "plugin", "install", f"m16khb-org/herdr-agents-graph/herdr-plugin", "--ref", branch, "--yes"],
+        ["herdr", "plugin", "install", "m16khb-org/herdr-agents-graph/herdr-plugin", "--ref", branch, "--yes"],
         env=env,
         timeout=600,
     )
-    print(f"install rc={rc}: {(out + err).strip()[-400:]}")
-    listed = PLUGIN_ID in run(["herdr", "plugin", "list"])[1]
-    print(f"listed={listed}")
-    seen = []
+    print(f"install --ref {branch} rc={rc}: {(out + err).strip()[-300:]}")
+    listed = [l for l in run(["herdr", "plugin", "list"])[1].splitlines() if PLUGIN_ID in l]
+    print(f"plugin list: {listed}")
+    return rc == 0 and bool(listed)
+
+
+def uninstall():
+    rc = run(["herdr", "plugin", "uninstall", PLUGIN_ID], timeout=120)[0]
+    gone = PLUGIN_ID not in run(["herdr", "plugin", "list"])[1]
+    print(f"uninstall rc={rc}, gone={gone}")
+    return gone
+
+
+def g9():
+    """Install from the pushed branch with a file:// release, toggle the graph
+    for this session's own omp pane twice, then uninstall."""
+    ok_install = install_from_branch()
     try:
-        for press in (1, 2):
-            herdr("pane", "focus", own)
-            run(["herdr", "plugin", "action", "invoke", f"{PLUGIN_ID}.open"], timeout=60)
-            time.sleep(3)
-            graph = [p["pane_id"] for p in panes() if p.get("label") == "agents-graph" or p.get("title") == "agents-graph"]
-            seen.append(graph)
-            print(f"after press {press}: graph panes {graph}")
-            if press == 1 and graph:
-                text = herdr("pane", "read", graph[0])
-                print(f"graph pane shows main: {'main' in str(text)}")
+        ok_toggle = ok_install and toggle_twice(os.environ["HERDR_PANE_ID"], "omp")
     finally:
-        herdr("pane", "focus", own)
-        rc_un = run(["herdr", "plugin", "uninstall", PLUGIN_ID], timeout=120)[0]
-        gone = PLUGIN_ID not in run(["herdr", "plugin", "list"])[1]
-        print(f"uninstall rc={rc_un}, gone={gone}")
-    done("G9", rc == 0 and listed and len(seen[0]) == 1 and not seen[1] and gone, f"seen={seen}")
+        gone = uninstall()
+    done("G9", ok_install and ok_toggle and gone, f"install={ok_install} toggle={ok_toggle} gone={gone}")
+
+
+def agent_pane(command, cwd):
+    """A pane of our own, split off this one, running `command`, once herdr
+    reports its session and the session's transcript exists (Claude Code
+    writes it with the first exchange, a moment after it reports the id).
+    Returns (pane id, agent_session)."""
+    own = os.environ["HERDR_PANE_ID"]
+    split = herdr("pane", "split", own, "--direction", "down", "--cwd", cwd)
+    pane = split["result"]["pane"]["pane_id"]
+    herdr("pane", "run", pane, command)
+    session = wait_for(lambda: herdr("pane", "get", pane)["result"]["pane"].get("agent_session"), 60)
+    if session and session.get("kind") == "id":
+        wait_for(lambda: run([BIN, "inspect", session["value"]])[0] == 0, 60)
+    return pane, session
+
+
+def codex_pane(cwd):
+    """A pane of our own running Codex. Codex holds a new session at "Hooks
+    need review" until the user trusts herdr's changed hook — a decision this
+    QA does not make for them — so the prompt is skipped (esc, hooks stay
+    untrusted) and the session the hook would have reported is reported the
+    same way it does, with `herdr pane report-agent-session`."""
+    started = time.time()
+    pane, _ = agent_pane("codex 'Reply with the single word ok.'", cwd)
+    if wait_for(lambda: "Hooks need review" in herdr("pane", "read", pane), 20):
+        herdr("pane", "send-keys", pane, "esc")
+        print("codex: skipped the hook-review prompt (hooks left untrusted)")
+
+    def rollout():
+        for path in glob.glob(f"{HOME}/.codex/sessions/**/rollout-*.jsonl", recursive=True):
+            if os.path.getmtime(path) < started:
+                continue
+            meta = json.loads(open(path).readline())["payload"]
+            if meta.get("cwd") == cwd and meta.get("thread_source") == "user":
+                return meta["id"]
+        return None
+
+    thread = wait_for(rollout, 60)
+    if thread:
+        herdr(
+            "pane", "report-agent-session", pane, "--source", "herdr:codex",
+            "--agent", "codex", "--agent-session-id", thread,
+        )
+    session = herdr("pane", "get", pane)["result"]["pane"].get("agent_session")
+    return pane, session
+
+
+def t10():
+    """Real herdr QA across the three agents (evidence, not a gate: it starts
+    Claude Code and Codex). Every pane it touches is its own."""
+    results = {}
+    ok_install = install_from_branch()
+    try:
+        results["omp"] = toggle_twice(os.environ["HERDR_PANE_ID"], "omp")
+        # Each agent starts in a directory it already trusts, so no trust
+        # prompt stands between the start and its first session report.
+        for agent, start in [
+            ("claude", lambda: agent_pane("claude 'Reply with the single word ok.'", f"{HOME}/Workspace")),
+            ("codex", lambda: codex_pane(f"{HOME}/Workspace/issueops")),
+        ]:
+            pane, session = start()
+            print(f"{agent} pane {pane}: agent_session={session}")
+            try:
+                results[agent] = bool(session) and session.get("kind") == "id" and toggle_twice(pane, agent)
+            finally:
+                herdr("pane", "close", pane)
+        # Failure path: the pane script's own message for an omp pane that has
+        # no session yet, shown in a pane of our own.
+        bare = next(
+            (p["pane_id"] for p in herdr("pane", "list")["result"]["panes"] if p.get("agent") == "omp" and not p.get("agent_session")),
+            None,
+        )
+        if bare:
+            here = os.getcwd()
+            split = herdr("pane", "split", os.environ["HERDR_PANE_ID"], "--direction", "down", "--cwd", here)
+            pane = split["result"]["pane"]["pane_id"]
+            ctx = json.dumps({"focused_pane_id": bare})
+            herdr(
+                "pane", "run", pane,
+                f"HERDR_PLUGIN_CONTEXT_JSON='{ctx}' HERDR_PLUGIN_ROOT={here}/herdr-plugin bash {here}/herdr-plugin/herdr/open.sh",
+            )
+            text = wait_for(lambda: "integration install omp" in str(herdr("pane", "read", pane)) and herdr("pane", "read", pane), 20)
+            print("\n".join(l for l in str(text).splitlines() if l.strip())[-600:])
+            results["omp-without-session"] = "Herdr has no session path for this omp pane" in str(text)
+            herdr("pane", "close", pane)
+    finally:
+        results["uninstalled"] = uninstall()
+    print(f"results: {results}")
+    done("T10", ok_install and all(results.values()), str(results))
 
 
 def g11():
