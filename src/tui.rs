@@ -60,13 +60,6 @@ pub async fn run(
     let mut last_tick = Instant::now();
     let mut last_status_tick = Instant::now();
 
-    // Recording-only scripted pointer (see crate::autopilot). Off unless
-    // AGENTS_GRAPH_DEMO=1, so this is inert for every real user. Armed at startup
-    // but only fired by the trigger key, so the tape picks the moment — the
-    // waypoints are read off the laid-out graph at that instant.
-    let demo = crate::autopilot::requested();
-    let mut pilot: Option<crate::autopilot::Autopilot> = None;
-
     let mut gate = RedrawGate::default();
 
     let result = loop {
@@ -84,14 +77,6 @@ pub async fn run(
         app.tick_timeline(elapsed);
         last_tick = now;
 
-        // Drive the scripted pointer through the REAL event path, so hit
-        // testing, the drag threshold, and the scrubber intercept all run.
-        if let Some(p) = pilot.as_mut() {
-            for ev in p.tick(elapsed) {
-                handler::handle_event(&ev, &mut app);
-            }
-        }
-
         // Interactive liveness (main/forks) is time-derived: a quiet session
         // produces no batches, so running→idle transitions need their own
         // clock. ~1s granularity is plenty for a minutes-scale idle window.
@@ -105,17 +90,10 @@ pub async fn run(
         // Draw at the top of the loop, so state changes from the previous
         // iteration are reflected — but only when the frame is stale.
         let wall = app.timeline.now_reference();
-        if gate.due(&app, now.into_std(), wall, panning || pilot.is_some()) {
-            let cursor = pilot.as_ref().map(|p| p.cell());
-            if let Err(e) = terminal.draw(|frame| {
-                ui::draw(frame, &mut app);
-                // Painted after the UI so the pointer sits above what it points at.
-                if let (Some(p), Some(_)) = (pilot.as_ref(), cursor) {
-                    p.draw(frame.buffer_mut());
-                }
-            }) {
-                break Err(e.into());
-            }
+        if gate.due(&app, now.into_std(), wall, panning)
+            && let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app))
+        {
+            break Err(e.into());
         }
 
         tokio::select! {
@@ -126,7 +104,7 @@ pub async fn run(
             }
             Some(ev) = event_rx.recv() => {
                 gate.mark();
-                if route(&ev, &mut app, &mut pilot, demo) {
+                if handler::handle_event(&ev, &mut app) {
                     break Ok(());
                 }
             }
@@ -137,7 +115,7 @@ pub async fn run(
         let mut quit = false;
         while let Ok(ev) = event_rx.try_recv() {
             gate.mark();
-            if route(&ev, &mut app, &mut pilot, demo) {
+            if handler::handle_event(&ev, &mut app) {
                 quit = true;
                 break;
             }
@@ -170,35 +148,4 @@ pub fn install_panic_hook() {
         let _ = execute!(stdout(), DisableMouseCapture);
         prev(info);
     }));
-}
-
-/// Route one input event, returning whether the app should quit.
-///
-/// Both the `select!` arm and the post-select drain go through here so the
-/// demo trigger cannot depend on which path an event arrives by.
-fn route(
-    event: &crossterm::event::Event,
-    app: &mut App,
-    pilot: &mut Option<crate::autopilot::Autopilot>,
-    demo: bool,
-) -> bool {
-    // Arm the scripted pointer. Waypoints are read off the CURRENT layout, so
-    // the script adapts to whatever the graph settled into.
-    if demo && pilot.is_none() && crate::autopilot::is_trigger(event) {
-        let start = app
-            .scrubber_area
-            .map_or((40, 10), |b| (b.x + b.width / 2, b.y.saturating_sub(6)));
-        *pilot = Some(crate::autopilot::Autopilot::new(
-            start,
-            crate::autopilot::tour(app),
-        ));
-        return false;
-    }
-    // While the pilot drives, a stray keypress in the recording terminal must
-    // not desync the script. Its own synthesized keys bypass this — they go
-    // straight to the handler from the tick loop.
-    if pilot.is_some() && crate::autopilot::is_key_press(event) {
-        return false;
-    }
-    handler::handle_event(event, app)
 }

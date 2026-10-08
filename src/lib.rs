@@ -30,8 +30,6 @@ pub mod ui;
 // interface to build on: they may change shape in any release. The parts meant
 // to be depended on are the domain and the vocabulary above.
 #[cfg(feature = "native")]
-pub mod autopilot;
-#[cfg(feature = "native")]
 pub mod handler;
 #[cfg(feature = "native")]
 pub mod tui;

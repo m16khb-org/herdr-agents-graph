@@ -326,15 +326,6 @@ fn resolve_target(arg: String) -> Result<Target> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Answer and exit before the TUI touches the terminal, so this works over a
-    // pipe — assets/build.sh asks for it and has no tty to spare. The tape's
-    // Sleep has to be at least this long or the recording cuts mid-gesture, and
-    // that number used to be copied into the tape by hand.
-    if std::env::var("AGENTS_GRAPH_DEMO").as_deref() == Ok("duration") {
-        println!("{:.2}", agents_graph::autopilot::tour_secs());
-        return Ok(());
-    }
-
     // The herdr bridge is plain request/response: no terminal, no tailer.
     let mut argv = std::env::args();
     if argv.nth(1).as_deref() == Some("herdr") {

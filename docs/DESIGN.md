@@ -73,7 +73,6 @@ src/
 ├── tui.rs         # terminal lifecycle + the central native event loop (tick_camera/tick_timeline/status_tick/draw, drawing only when the frame is stale)
 ├── handler.rs     # input routing: app-level keys → App, the rest → the flow; scrubber clicks; process_flow_events
 ├── herdr.rs       # native-only: `agents-graph herdr resolve|toggle`, the Herdr plugin's JSON handling (see HERDR-PLUGIN.md)
-├── autopilot.rs   # native-only: a scripted pointer pilot behind AGENTS_GRAPH_DEMO=1; inert unless set
 ├── fact.rs        # the provider boundary: Fact + FactKind, the vocabulary every provider speaks and the model folds
 ├── provider/
 │   ├── mod.rs     # the input side: Provider enum, SessionFile, Session, the Stream enum, open / sweep / assemble (DISCOVERY.md)

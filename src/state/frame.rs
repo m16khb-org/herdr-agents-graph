@@ -71,7 +71,7 @@ impl RedrawGate {
     }
 
     /// Whether this tick draws. `moving` is motion the app does not track
-    /// itself (an auto-pan or drag in the flow, the scripted demo pointer).
+    /// itself: an auto-pan or drag in the flow.
     pub fn due(
         &mut self,
         app: &App,
