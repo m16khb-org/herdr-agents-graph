@@ -206,6 +206,19 @@ def rpc(method, params):
     return json.loads(buf)
 
 
+def own_pane():
+    """This session's herdr pane: HERDR_PANE_ID, or — under a runner that
+    clears the environment — the omp pane working in this worktree."""
+    if os.environ.get("HERDR_PANE_ID"):
+        return os.environ["HERDR_PANE_ID"]
+    here = os.getcwd()
+    return next(
+        p["pane_id"]
+        for p in herdr("pane", "list")["result"]["panes"]
+        if p.get("agent") == "omp" and p.get("cwd") == here
+    )
+
+
 def graph_panes():
     return [p["pane_id"] for p in herdr("pane", "list")["result"]["panes"] if p.get("label") == "agents-graph"]
 
@@ -270,7 +283,7 @@ def g9():
     for this session's own omp pane twice, then uninstall."""
     ok_install = install_from_branch()
     try:
-        ok_toggle = ok_install and toggle_twice(os.environ["HERDR_PANE_ID"], "omp")
+        ok_toggle = ok_install and toggle_twice(own_pane(), "omp")
     finally:
         gone = uninstall()
     done("G9", ok_install and ok_toggle and gone, f"install={ok_install} toggle={ok_toggle} gone={gone}")
@@ -281,7 +294,7 @@ def agent_pane(command, cwd):
     reports its session and the session's transcript exists (Claude Code
     writes it with the first exchange, a moment after it reports the id).
     Returns (pane id, agent_session)."""
-    own = os.environ["HERDR_PANE_ID"]
+    own = own_pane()
     split = herdr("pane", "split", own, "--direction", "down", "--cwd", cwd)
     pane = split["result"]["pane"]["pane_id"]
     herdr("pane", "run", pane, command)
@@ -328,7 +341,7 @@ def t10():
     results = {}
     ok_install = install_from_branch()
     try:
-        results["omp"] = toggle_twice(os.environ["HERDR_PANE_ID"], "omp")
+        results["omp"] = toggle_twice(own_pane(), "omp")
         # Each agent starts in a directory it already trusts, so no trust
         # prompt stands between the start and its first session report.
         for agent, start in [
@@ -349,7 +362,7 @@ def t10():
         )
         if bare:
             here = os.getcwd()
-            split = herdr("pane", "split", os.environ["HERDR_PANE_ID"], "--direction", "down", "--cwd", here)
+            split = herdr("pane", "split", own_pane(), "--direction", "down", "--cwd", here)
             pane = split["result"]["pane"]["pane_id"]
             ctx = json.dumps({"focused_pane_id": bare})
             herdr(
