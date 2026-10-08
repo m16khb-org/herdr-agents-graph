@@ -12,7 +12,7 @@
 set -euo pipefail
 
 herdr="${HERDR_BIN_PATH:-herdr}"
-plugin="${HERDR_PLUGIN_ID:-furkankly.zoetrope}"
+plugin="${HERDR_PLUGIN_ID:-m16khb.herdr-agents-graph}"
 begin="# >>> $plugin keys (managed: \`setup-keys\` writes this block, \`remove-keys\` deletes it)"
 end="# <<< $plugin keys"
 
@@ -25,11 +25,11 @@ end="# <<< $plugin keys"
 #
 # key | action id | description
 bindings=(
-  "prefix+shift+z|open|zoetrope: session graph (overlay)"
+  "prefix+shift+z|open|agents-graph: session graph (overlay)"
 )
 alternates=(
-  "prefix+shift+v|open-split|zoetrope: session graph (split)"
-  "prefix+shift+c|open-tab|zoetrope: session graph (tab)"
+  "prefix+shift+v|open-split|agents-graph: session graph (split)"
+  "prefix+shift+c|open-tab|agents-graph: session graph (tab)"
 )
 
 config_path() {
@@ -56,12 +56,12 @@ strip_block() {
 # is sent too, for the setups that have them switched on.
 say() {
   echo "$*"
-  "$herdr" notification show "zoetrope" --body "$*" --sound none >/dev/null 2>&1 || true
+  "$herdr" notification show "agents-graph" --body "$*" --sound none >/dev/null 2>&1 || true
 }
 
 fail() {
   echo "$*" >&2
-  "$herdr" notification show "zoetrope: keybindings not installed" --body "$*" --sound none >/dev/null 2>&1 || true
+  "$herdr" notification show "agents-graph: keybindings not installed" --body "$*" --sound none >/dev/null 2>&1 || true
   exit 1
 }
 
@@ -115,7 +115,7 @@ case "${1:-}" in
 
     [ -n "$installed" ] || fail "Every default key is already bound in $path ($skipped), so nothing was changed. Bind $plugin.open to a key of your own instead."
 
-    cp "$path" "$path.zoetrope-backup"
+    cp "$path" "$path.agents-graph-backup"
     # `rest` came from a command substitution, which already dropped every
     # trailing newline, so the block always lands after exactly one blank line.
     { [ -n "$rest" ] && printf '%s\n\n' "$rest"
@@ -125,22 +125,22 @@ case "${1:-}" in
     } > "$path"
 
     if ! "$herdr" config check >/dev/null 2>&1; then
-      cp "$path.zoetrope-backup" "$path"
+      cp "$path.agents-graph-backup" "$path"
       fail "The written config did not pass \`herdr config check\`; restored $path from the backup."
     fi
     reload
-    msg="Bound $installed in $path (backup: $path.zoetrope-backup). Focus an agent pane and press ${installed%% *}. The split and tab placements are in the same block, commented out."
+    msg="Bound $installed in $path (backup: $path.agents-graph-backup). Focus an agent pane and press ${installed%% *}. The split and tab placements are in the same block, commented out."
     [ -z "$skipped" ] || msg="$msg Left $skipped alone, already bound there."
     say "$msg"
     ;;
   remove)
     [ -f "$path" ] || { say "No config at $path, nothing to remove."; exit 0; }
     grep -qxF "$begin" "$path" || { say "No $plugin block in $path, nothing to remove."; exit 0; }
-    cp "$path" "$path.zoetrope-backup"
-    rest=$(strip_block "$path.zoetrope-backup")
+    cp "$path" "$path.agents-graph-backup"
+    rest=$(strip_block "$path.agents-graph-backup")
     if [ -n "$rest" ]; then printf '%s\n' "$rest" > "$path"; else : > "$path"; fi
     reload
-    say "Removed the $plugin keybindings from $path (backup: $path.zoetrope-backup)."
+    say "Removed the $plugin keybindings from $path (backup: $path.agents-graph-backup)."
     ;;
   *)
     echo "usage: keys.sh setup|remove" >&2

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Pane command: resolve the session of the pane this was opened from, and run
-# `zoe` on it. Every failure is printed here and held until you press enter,
-# since this terminal is what the user is looking at.
+# Pane command: resolve the session of the pane this was opened from and draw
+# it. Every failure is printed here and held until you press enter, since this
+# terminal is what the user is looking at.
 set -euo pipefail
 
-root="${HERDR_PLUGIN_ROOT:-.}"
+bin="${HERDR_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/bin/agents-graph"
 
 die() {
   printf '\n  %s\n\n' "$*" >&2
@@ -12,21 +12,12 @@ die() {
   exit 1
 }
 
-command -v zoe >/dev/null 2>&1 || die "zoe is not on PATH (brew install furkankly/tap/zoetrope, or cargo install zoetrope)"
+[ -x "$bin" ] || die "agents-graph is not installed at $bin; reinstall the plugin so its build step can download it"
 
-if ! target=$(bash "$root/herdr/resolve.sh" 2>&1); then
-  die "$target"
-fi
+target=$("$bin" herdr resolve 2>&1) || die "$target"
 
-# The pane's agent is running, so ride the live edge; space and the scrubber
-# go back.
-#
-# Splitting `target` on the first space stays correct even though the second
-# field can be an absolute path (omp, pi), which this box's transcripts never
-# put a space in, but which is not guaranteed in general: the agent token
-# from resolve.sh never contains a space, so "%% *" (longest suffix match
-# from the first space on) yields exactly the agent, and "#* " (shortest
-# prefix match up to that same space) yields everything after it verbatim,
-# spaces and all.
-zoe --provider "${target%% *}" --follow "${target#* }" \
-  || die "zoe exited with status $? (zoe --provider ${target%% *} --follow ${target#* })"
+# "<provider> <id-or-path>": the provider never contains a space, so splitting
+# on the first one keeps a path with spaces intact. The agent is running, so
+# ride the live edge; space and the scrubber go back.
+"$bin" --provider "${target%% *}" --follow "${target#* }" \
+  || die "agents-graph exited with status $? (--provider ${target%% *} --follow ${target#* })"

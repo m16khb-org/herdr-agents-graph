@@ -13,6 +13,8 @@
 //! agents-graph inspect <file|id|dir> headless: print the session tree + info
 //! ```
 
+mod herdr;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -68,6 +70,8 @@ USAGE:
     agents-graph <file> --speed N    playback speed (default 8.0)
     agents-graph --provider <name>   force the format (claude, codex, omp) instead of detecting it
     agents-graph inspect <file|id>   headless: print the session tree + info
+    agents-graph herdr resolve       print the focused herdr pane's provider and session
+    agents-graph herdr toggle [p]    open the graph pane, or close the one it opened
     agents-graph --version           print the version and exit
 
 Once open, scrub/follow/pause/go-live are available no matter how you launched.";
@@ -329,6 +333,12 @@ async fn main() -> Result<()> {
     if std::env::var("AGENTS_GRAPH_DEMO").as_deref() == Ok("duration") {
         println!("{:.2}", agents_graph::autopilot::tour_secs());
         return Ok(());
+    }
+
+    // The herdr bridge is plain request/response: no terminal, no tailer.
+    let mut argv = std::env::args();
+    if argv.nth(1).as_deref() == Some("herdr") {
+        return herdr::run(argv);
     }
 
     let cli = parse_cli(std::env::args())?;
