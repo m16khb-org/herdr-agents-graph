@@ -17,6 +17,8 @@
 //! agent's lifetime; that `SubAgentActivity{completed}` is the one record that
 //! observes a child's end, and that some versions never write it.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 
 pub mod discovery;
@@ -42,6 +44,15 @@ pub struct Stream {
     /// The cumulative output tokens last seen, so each `token_count` states
     /// only what it added.
     output_tokens: u64,
+    /// Whether this file has written a `token_count`: the authoritative usage.
+    /// From the first one on, `token_usage_record`s are ignored.
+    saw_token_count: bool,
+    /// `token_usage_record` output tokens held back until [`Stream::finish`],
+    /// for a rollout that never writes a `token_count`. Counted once per
+    /// response id, and dated to the last record.
+    pending_tokens: u64,
+    pending_ids: HashSet<String>,
+    pending_at: Option<DateTime<Utc>>,
 }
 
 impl Stream {
@@ -55,6 +66,34 @@ impl Stream {
     pub fn push(&mut self, line: &str) -> Option<Statement> {
         let line = parse_line(line)?;
         self.push_line(&line)
+    }
+
+    /// What the file states once it has been read to the end: the summed
+    /// output tokens of its `token_usage_record`s when it never wrote a
+    /// `token_count`, which would otherwise have stated them. Only the
+    /// whole-file readers (inspect, replay) call it; a live tail never does,
+    /// so there such a session shows no tokens. The amount joins the running
+    /// total a later `token_count` is diffed against, so a count that does
+    /// arrive afterwards adds only its excess.
+    pub fn finish(&mut self) -> Option<Statement> {
+        if self.saw_token_count || self.pending_tokens == 0 {
+            return None;
+        }
+        let owner = self.owner()?;
+        let output = std::mem::take(&mut self.pending_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(output);
+        let at = self.pending_at;
+        Some(Statement {
+            at,
+            facts: vec![Fact {
+                agent: Some(owner),
+                ts: at,
+                kind: FactKind::Tokens {
+                    output,
+                    dedup: None,
+                },
+            }],
+        })
     }
 
     /// State what an already-parsed line says.
@@ -237,6 +276,11 @@ impl Stream {
                 match ev {
                     EventMsg::ItemCompleted(ic) => self.item_facts(owner, ic, &mut out),
                     EventMsg::TokenCount { info } => {
+                        if !self.saw_token_count {
+                            self.saw_token_count = true;
+                            self.pending_tokens = 0;
+                            self.pending_ids.clear();
+                        }
                         let total = info
                             .as_ref()
                             .and_then(|i| i.total_token_usage.as_ref())
@@ -283,8 +327,20 @@ impl Stream {
                 }
                 ensure_activity(&mut out, owner);
             }
-            // `world_state`, inter-agent metadata, usage records: context the
-            // runtime wrote around the thread, not the thread speaking.
+            Payload::TokenUsageRecord(record) => {
+                if !self.saw_token_count
+                    && let Some(output) = record.usage.as_ref().and_then(|u| u.output_tokens)
+                    && record
+                        .response_id
+                        .as_ref()
+                        .is_none_or(|id| self.pending_ids.insert(id.clone()))
+                {
+                    self.pending_tokens = self.pending_tokens.saturating_add(output);
+                    self.pending_at = line.timestamp.or(self.pending_at);
+                }
+            }
+            // `world_state`, inter-agent metadata: context the runtime wrote
+            // around the thread, not the thread speaking.
             Payload::SessionMeta(_) | Payload::Other(_) => {}
         }
         out
@@ -558,12 +614,65 @@ mod tests {
                     .map(|(path, _)| {
                         let text = std::fs::read_to_string(&path).unwrap();
                         let mut stream = Stream::new();
-                        text.lines().filter_map(|l| stream.push(l)).collect()
+                        let mut statements: Vec<Statement> =
+                            text.lines().filter_map(|l| stream.push(l)).collect();
+                        statements.extend(stream.finish());
+                        statements
                     })
                     .collect()
             };
             crate::provider::harness::conform("codex", &name, streams);
         }
+    }
+
+    const META: &str = r#"{"timestamp":"2026-09-06T12:29:12.000Z","ordinal":0,"type":"session_meta","payload":{"id":"r","session_id":"r","source":"cli","thread_source":"user"}}"#;
+    const USAGE_1: &str = r#"{"timestamp":"2026-09-06T12:29:37.476Z","ordinal":1,"type":"token_usage_record","payload":{"thread_id":"r","response_id":"resp_1","usage":{"input_tokens":23071,"output_tokens":239}}}"#;
+    const USAGE_1_AGAIN: &str = r#"{"timestamp":"2026-09-06T12:29:38.000Z","ordinal":2,"type":"token_usage_record","payload":{"thread_id":"r","response_id":"resp_1","usage":{"output_tokens":239}}}"#;
+    const USAGE_2: &str = r#"{"timestamp":"2026-09-06T12:30:05.861Z","ordinal":3,"type":"token_usage_record","payload":{"thread_id":"r","response_id":"resp_2","usage":{"output_tokens":159}}}"#;
+    const COUNT_400: &str = r#"{"timestamp":"2026-09-06T12:30:06.000Z","ordinal":4,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":400},"last_token_usage":{"output_tokens":161}}}}"#;
+
+    fn tokens(statements: &[Statement]) -> u64 {
+        statements
+            .iter()
+            .flat_map(|s| &s.facts)
+            .map(|f| match f.kind {
+                FactKind::Tokens { output, .. } => output,
+                _ => 0,
+            })
+            .sum()
+    }
+
+    fn read_whole(lines: &[&str]) -> (Stream, Vec<Statement>) {
+        let mut s = Stream::new();
+        let mut out: Vec<Statement> = lines.iter().filter_map(|l| s.push(l)).collect();
+        out.extend(s.finish());
+        (s, out)
+    }
+
+    /// `token_count` is the authoritative usage: a file that writes it is
+    /// counted from it alone. A file that never does is counted from its
+    /// `token_usage_record`s, once per response id, when it has been read.
+    #[test]
+    fn token_usage_record_only_counts_without_token_count() {
+        let (_, both) = read_whole(&[META, USAGE_1, USAGE_2, COUNT_400]);
+        assert_eq!(tokens(&both), 400);
+
+        let (_, only_records) = read_whole(&[META, USAGE_1, USAGE_1_AGAIN, USAGE_2]);
+        assert_eq!(tokens(&only_records), 239 + 159);
+        let last = only_records.last().unwrap();
+        assert_eq!(last.facts[0].agent.as_deref(), Some(MAIN_ID));
+        assert!(last.at.is_some(), "dated to the last record, not floating");
+    }
+
+    /// After `finish` has stated the records, a `token_count` that covers the
+    /// same responses (a tail that catches up) adds only what exceeds them.
+    #[test]
+    fn finish_then_token_count_does_not_double_count() {
+        let (mut s, mut out) = read_whole(&[META, USAGE_1, USAGE_2]);
+        assert_eq!(tokens(&out), 398);
+        out.extend(s.push(COUNT_400));
+        assert_eq!(tokens(&out), 400);
+        assert!(s.finish().is_none());
     }
 
     use std::path::PathBuf;

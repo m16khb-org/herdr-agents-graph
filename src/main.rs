@@ -198,6 +198,9 @@ fn parse_session_fully(
                     }
                 })
                 .with_context(context)?;
+                if let Some(statement) = stream.finish() {
+                    apply(statement);
+                }
             }
             ReadMode::Whole => {
                 let text = std::fs::read_to_string(&f.path).with_context(context)?;

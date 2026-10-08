@@ -1,0 +1,3 @@
+  ◌ [main] codex  (idle) — id=main
+      model: gpt-5.6-terra
+      tools: 0 (0✓ 0✗ 0⏳)   tokens: 398

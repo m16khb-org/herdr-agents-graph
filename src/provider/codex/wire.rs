@@ -56,8 +56,10 @@ pub enum Payload {
     EventMsg(EventMsg),
     /// Per-turn settings; the model name lives here.
     TurnContext(TurnContext),
-    /// `world_state`, `inter_agent_communication_metadata`,
-    /// `token_usage_record`, and whatever a later version adds.
+    /// Usage of one model response (`token_usage_record`, cli 0.159+).
+    TokenUsageRecord(TokenUsageRecord),
+    /// `world_state`, `inter_agent_communication_metadata`, and whatever a
+    /// later version adds.
     Other(String),
 }
 
@@ -352,6 +354,15 @@ pub struct TokenUsage {
     pub output_tokens: Option<u64>,
 }
 
+/// One model response's usage. The same output tokens `token_count` totals,
+/// so it is only a fallback for a rollout that never writes a `token_count`
+/// (see `super::Stream::finish`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TokenUsageRecord {
+    pub response_id: Option<String>,
+    pub usage: Option<TokenUsage>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ThreadSettings {
     pub model: Option<String>,
@@ -510,6 +521,9 @@ pub fn parse_line(line: &str) -> Option<Line> {
             .unwrap_or(Payload::EventMsg(EventMsg::Other)),
         "turn_context" => serde_json::from_value(env.payload)
             .map(Payload::TurnContext)
+            .unwrap_or_else(|_| Payload::Other(env.kind.clone())),
+        "token_usage_record" => serde_json::from_value(env.payload)
+            .map(Payload::TokenUsageRecord)
             .unwrap_or_else(|_| Payload::Other(env.kind.clone())),
         other => Payload::Other(other.to_string()),
     };

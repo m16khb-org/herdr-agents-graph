@@ -139,12 +139,15 @@ pub(crate) fn build_replay(
 /// streaming it so only the statements stay in memory. Returns the tail state
 /// just past the last newline — a trailing newline-less fragment is a
 /// mid-write line, left for the follow-up tail to emit once its newline
-/// lands. An unreadable file yields nothing and a fresh state.
+/// lands. An unreadable file yields nothing and a fresh state. The stream's
+/// end-of-file statement (see [`Stream::finish`]) is collected last.
 fn parse_file_into(path: &Path, stream: &mut Stream, items: &mut Vec<ReplayItem>) -> TailState {
-    read_lines(path, &mut |line| {
+    let state = read_lines(path, &mut |line| {
         items.extend(stream.push(line).map(ReplayItem::new));
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    items.extend(stream.finish().map(ReplayItem::new));
+    state
 }
 
 #[cfg(test)]

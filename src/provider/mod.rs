@@ -115,7 +115,8 @@ impl Provider {
 // ---------------------------------------------------------------------------
 
 /// One per-file parser, whichever format wrote the file. `push` is the whole
-/// reading contract a feeder needs.
+/// reading contract a feeder needs; a feeder that reads a file to its end
+/// also calls `finish`.
 #[derive(Debug, Clone)]
 pub enum Stream {
     Claude(claude::Stream),
@@ -134,6 +135,16 @@ impl Stream {
         }
     }
 
+    /// What the file states only once it has been read to its end: Codex's
+    /// `token_usage_record` fallback for a rollout with no `token_count`.
+    /// Claude and omp state everything line by line, so for them this is
+    /// always `None`.
+    pub fn finish(&mut self) -> Option<Statement> {
+        match self {
+            Stream::Codex(s) => s.finish(),
+            Stream::Claude(_) | Stream::Omp(_) => None,
+        }
+    }
 }
 
 /// Which provider wrote this text, from its first record. Content, never a
