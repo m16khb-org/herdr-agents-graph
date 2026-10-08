@@ -24,7 +24,7 @@ use serde_json::Value;
 
 /// Exit status for "this pane has nothing this plugin can draw": the pane
 /// script shows the message and waits for enter instead of drawing.
-pub const EXIT_UNRESOLVED: i32 = 2;
+const EXIT_UNRESOLVED: i32 = 2;
 
 const PLACEMENTS: [&str; 4] = ["overlay", "split", "tab", "zoomed"];
 
@@ -201,9 +201,13 @@ fn toggle(placement: &str) -> Result<()> {
         // A pane closed by hand leaves its id behind; `pane get` failing is
         // how that shows, and the press then opens a new one.
         let still_open = herdr_json(&["pane", "get", &open]).is_ok();
+        if still_open {
+            // Forget the pane only once it is closed: a failed close keeps the
+            // record, so the next press can still reach that pane.
+            herdr_json(&["plugin", "pane", "close", &open])?;
+        }
         let _ = std::fs::remove_file(&record);
         if still_open {
-            herdr_json(&["plugin", "pane", "close", &open])?;
             return Ok(());
         }
     }
