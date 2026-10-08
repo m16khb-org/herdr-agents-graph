@@ -23,7 +23,9 @@ the plugin version, checks it against the release's `SHA256SUMS`, and keeps it
 inside the plugin checkout (`herdr-plugin/bin/`). It needs `curl`, `tar`, and
 `shasum` or `sha256sum`; nothing is compiled, nothing lands on `PATH`, and no
 `jq`, Homebrew, or cargo is involved. Releases are published by pushing a
-`v<version>` tag (`.github/workflows/cd.yml`).
+`v<version>` tag (`.github/workflows/cd.yml`); until the `v0.1.0` release
+exists the build step has nothing to download, and `AG_RELEASE_BASE` can point
+it at a directory of locally built archives instead.
 
 `setup-keys` binds `prefix+shift+z` to the overlay graph in your herdr config
 (backed up first); `remove-keys` takes it out again. Press the key on an agent
