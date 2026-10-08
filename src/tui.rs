@@ -1,10 +1,11 @@
 //! Terminal lifecycle and the central event loop.
 //!
-//! A single-task UI loop with `tick_animation` for marching-ant edge animation.
-//! Installs mouse capture and a panic hook that also disables mouse capture
-//! (ratatui's default hook restores the screen but not mouse capture). Draws
-//! every iteration so animation never freezes; drains both channels after the
-//! `select!` so input never lags.
+//! A single-task UI loop that ticks every 16 ms (marching ants, glides and the
+//! replay playhead advance on it) but draws only when the frame is stale —
+//! see [`RedrawGate`]. Installs mouse capture and a panic hook that also
+//! disables mouse capture (ratatui's default hook restores the screen but not
+//! mouse capture). Drains both channels after the `select!` so input never
+//! lags.
 
 use std::io::stdout;
 
@@ -14,11 +15,12 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 
 use crate::handler;
-use crate::state::App;
+use crate::state::{App, RedrawGate};
 use crate::tailer::{TailRequest, UiEvent};
 use crate::ui;
 
-/// Frame/tick cadence. 16 ms ≈ 60 fps so marching-ant edges stay smooth.
+/// Tick cadence. 16 ms ≈ 60 fps so marching-ant edges stay smooth while they
+/// move; a tick with nothing new on screen draws nothing.
 const TICK: Duration = Duration::from_millis(16);
 
 /// Interval for re-deriving time-based agent status (see `App::status_tick`).
@@ -27,8 +29,8 @@ const STATUS_TICK: Duration = Duration::from_secs(1);
 /// Run the TUI to completion.
 ///
 /// Owns the terminal, spawns the crossterm `EventStream` reader into an
-/// unbounded channel, ticks at 16 ms, and routes UI events / input each
-/// iteration. Returns when the user quits.
+/// unbounded channel, ticks at 16 ms, routes UI events / input each iteration,
+/// and draws when the frame is stale. Returns when the user quits.
 pub async fn run(
     mut app: App,
     // Held for the run only to keep the request channel open: the tailer treats a
@@ -65,14 +67,18 @@ pub async fn run(
     let demo = crate::autopilot::requested();
     let mut pilot: Option<crate::autopilot::Autopilot> = None;
 
+    let mut gate = RedrawGate::default();
+
     let result = loop {
-        // Advance animation/auto-pan EVERY iteration before drawing — otherwise
-        // marching-ant edges freeze (the tick_auto_pan return is ignored).
+        // Advance animation/auto-pan EVERY iteration, drawn or not, so motion
+        // resumes from where it is rather than jumping.
         let now = Instant::now();
         let elapsed = now - last_tick;
-        let _ = app.flow.tick_auto_pan(elapsed);
-        app.flow.tick_animation(elapsed);
-        app.tick_camera(elapsed);
+        let panning = app.tick_auto_pan(elapsed);
+        app.tick_animation(elapsed);
+        if app.tick_camera(elapsed) {
+            gate.mark();
+        }
         // Advance the replay playhead (paces replay; no-op while following a
         // live edge, where folding happens as Batches arrive).
         app.tick_timeline(elapsed);
@@ -90,27 +96,36 @@ pub async fn run(
         // produces no batches, so running→idle transitions need their own
         // clock. ~1s granularity is plenty for a minutes-scale idle window.
         if now - last_status_tick >= STATUS_TICK {
-            app.status_tick();
+            if app.status_tick() {
+                gate.mark();
+            }
             last_status_tick = now;
         }
 
-        // Draw at the top of the loop, every iteration, so animation is smooth
-        // and state changes from the previous iteration are reflected.
-        let cursor = pilot.as_ref().map(|p| p.cell());
-        if let Err(e) = terminal.draw(|frame| {
-            ui::draw(frame, &mut app);
-            // Painted after the UI so the pointer sits above what it points at.
-            if let (Some(p), Some(_)) = (pilot.as_ref(), cursor) {
-                p.draw(frame.buffer_mut());
+        // Draw at the top of the loop, so state changes from the previous
+        // iteration are reflected — but only when the frame is stale.
+        let wall = app.timeline.now_reference();
+        if gate.due(&app, now.into_std(), wall, panning || pilot.is_some()) {
+            let cursor = pilot.as_ref().map(|p| p.cell());
+            if let Err(e) = terminal.draw(|frame| {
+                ui::draw(frame, &mut app);
+                // Painted after the UI so the pointer sits above what it points at.
+                if let (Some(p), Some(_)) = (pilot.as_ref(), cursor) {
+                    p.draw(frame.buffer_mut());
+                }
+            }) {
+                break Err(e.into());
             }
-        }) {
-            break Err(e.into());
         }
 
         tokio::select! {
             _ = tick.tick() => {}
-            Some(ev) = ui_rx.recv() => app.handle_ui_event(ev),
+            Some(ev) = ui_rx.recv() => {
+                app.handle_ui_event(ev);
+                gate.mark();
+            }
             Some(ev) = event_rx.recv() => {
+                gate.mark();
                 if route(&ev, &mut app, &mut pilot, demo) {
                     break Ok(());
                 }
@@ -121,6 +136,7 @@ pub async fn run(
         // batches lag behind a single per-frame wakeup.
         let mut quit = false;
         while let Ok(ev) = event_rx.try_recv() {
+            gate.mark();
             if route(&ev, &mut app, &mut pilot, demo) {
                 quit = true;
                 break;
@@ -128,6 +144,7 @@ pub async fn run(
         }
         while let Ok(ev) = ui_rx.try_recv() {
             app.handle_ui_event(ev);
+            gate.mark();
         }
 
         if quit || app.should_quit {

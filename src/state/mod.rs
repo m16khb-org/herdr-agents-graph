@@ -8,6 +8,7 @@
 
 // Two projections of the model. Crate-private: what the frontends need from
 // them is re-exported below, as the types of `App`'s fields.
+mod frame;
 pub(crate) mod graph;
 pub mod info;
 pub mod render;
@@ -16,6 +17,7 @@ pub(crate) mod timeline;
 
 // `App`'s public fields, nameable from outside without exposing the module
 // layout they live in.
+pub use self::frame::{FrameStamp, RedrawGate};
 pub use self::graph::AgentFlow;
 pub use self::info::SessionInfo;
 pub use self::timeline::Timeline;
@@ -226,6 +228,10 @@ pub struct App {
     /// Ladder of folded-model snapshots, ascending by `folded`, used to start a
     /// backward seek near its target instead of re-folding from item zero.
     snapshots: Vec<Snapshot>,
+    /// A mirror of rataflow's edge-animation clock (advanced by
+    /// [`tick_animation`](Self::tick_animation) exactly as rataflow advances
+    /// its own), so the frame loop can see when the ants' phase changes.
+    ants_ms: u64,
 }
 
 impl App {
@@ -257,6 +263,7 @@ impl App {
             pending_center: None,
             pending_seek: None,
             snapshots: Vec::new(),
+            ants_ms: 0,
         }
     }
 
@@ -264,6 +271,11 @@ impl App {
     /// tag). "Live" requires both following the edge AND a recent append, so an
     /// old session followed to its (static) edge reads `Idle`, not `Live`.
     pub fn transport(&self) -> Transport {
+        self.transport_at(web_time::Instant::now())
+    }
+
+    /// [`transport`](Self::transport) as of `now`.
+    pub fn transport_at(&self, now: web_time::Instant) -> Transport {
         // Paused is explicit user intent, so it outranks "parked in the past":
         // pausing drops `follow_head` (it parks the cursor), and a deliberate
         // pause should read `Paused`, not `History`.
@@ -273,7 +285,9 @@ impl App {
         if !self.timeline.follow_head {
             return Transport::History;
         }
-        let fresh = self.last_batch_at.is_some_and(|t| t.elapsed() < LIVE_FRESH);
+        let fresh = self
+            .last_batch_at
+            .is_some_and(|t| now.saturating_duration_since(t) < LIVE_FRESH);
         if fresh && self.timeline.at_edge() {
             return Transport::Live;
         }
@@ -816,17 +830,23 @@ impl App {
     /// only re-synced when a status actually flipped (no per-second content
     /// rebuilds). Follow's auto-narration also re-engages here: esc-unpin and
     /// stale centering must not wait for the next batch.
-    pub fn status_tick(&mut self) {
+    ///
+    /// Returns whether the picture may have changed: a status flipped, or
+    /// Follow re-tracked (which can move the selection or the camera).
+    pub fn status_tick(&mut self) -> bool {
         let now = self.timeline.now_reference();
-        if self.session.recompute_liveness(now) {
+        let flipped = self.session.recompute_liveness(now);
+        if flipped {
             self.session.recompute_group_status();
             // Status flips never change topology, so this is a content-only sync;
             // layout stays user-driven (no auto-relayout — see `resync`).
             graph::sync(&mut self.flow, &self.session, false);
         }
-        if self.camera == Camera::Follow {
+        let following = self.camera == Camera::Follow;
+        if following {
             self.track_activity();
         }
+        flipped || following
     }
 
     /// Center the camera on the most recently active agent (Follow mode).
@@ -920,10 +940,11 @@ impl App {
     /// Advance an in-progress camera glide by `dt`, writing the eased offset to
     /// the viewport. Called every frame from the event loop; a no-op when no
     /// glide is active. Viewport writes are quiet, so this never trips the
-    /// Manual-camera detection.
-    pub fn tick_camera(&mut self, dt: std::time::Duration) {
+    /// Manual-camera detection. Returns whether the viewport moved — true on
+    /// the glide's last step too, when it lands and stops animating.
+    pub fn tick_camera(&mut self, dt: std::time::Duration) -> bool {
         let Some(glide) = self.camera_glide.as_mut() else {
-            return;
+            return false;
         };
         glide.t = (glide.t + dt.as_secs_f64() / GLIDE_SECS).min(1.0);
         let (x, y) = glide.offset();
@@ -934,6 +955,28 @@ impl App {
             self.flow.viewport.set_offset(to.0, to.1);
             self.camera_glide = None;
         }
+        true
+    }
+
+    /// Advance rataflow's edge animation by `elapsed`, keeping the app's
+    /// mirror of its clock in step (see `frame_stamp`).
+    pub fn tick_animation(&mut self, elapsed: std::time::Duration) {
+        self.flow.tick_animation(elapsed);
+        // rataflow adds whole milliseconds and wraps at one pattern cycle
+        // (`ANIMATION_PATTERN_LENGTH` = 3 phases); the same arithmetic keeps
+        // the mirror on the phase it draws.
+        let cycle = 3 * self.flow.animation_speed_ms.max(1);
+        self.ants_ms = (self.ants_ms + elapsed.as_millis() as u64) % cycle;
+    }
+
+    /// Advance the flow's edge-of-canvas auto-pan. Returns whether the canvas
+    /// is in motion: an auto-pan moved the viewport, or a drag is under way.
+    pub fn tick_auto_pan(&mut self, elapsed: std::time::Duration) -> bool {
+        let panned = matches!(
+            self.flow.tick_auto_pan(elapsed),
+            rataflow::EventResponse::Event(_)
+        );
+        panned || self.flow.is_dragging()
     }
 
     /// The node id of the currently selected agent, if any (read from the flow

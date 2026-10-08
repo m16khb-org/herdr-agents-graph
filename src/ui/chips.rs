@@ -320,6 +320,70 @@ impl ChipTray {
     pub fn clear(&mut self) {
         *self = Self::default();
     }
+
+    /// A digest of what [`render`] would paint that can change with time
+    /// alone: which chips are visible, the fade band each is in, and each
+    /// label (a single pending tool's duration ticks). The frame loop compares
+    /// it across ticks to skip a redraw that would paint the same chips.
+    pub(crate) fn frame_key(&self, model: &SessionModel, now: Option<DateTime<Utc>>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for chip in &self.chips {
+            let Some((state, age)) = visible(chip, model) else {
+                continue;
+            };
+            (
+                chip.agent_id.as_str(),
+                chip.start,
+                state as u8,
+                fade_band(state, age),
+            )
+                .hash(&mut h);
+            label(chip, model, now).hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
+/// A chip's state and afterglow age, or `None` once it has faded out (or its
+/// run no longer exists in the model).
+fn visible(chip: &Chip, model: &SessionModel) -> Option<(ToolState, Duration)> {
+    let state = group_state(model, &chip.agent_id, chip.start, chip.count)?;
+    // Pending runs persist (age 0); completed ones fade over their afterglow.
+    let age = chip.afterglow.unwrap_or(Duration::ZERO);
+    (chip.afterglow.is_none() || age < ttl(state)).then_some((state, age))
+}
+
+/// The chip's text. A run of >1 call shows its count (`⚒ bash ×5`); a single
+/// tool shows its duration (`⚒ bash 0.5s`), live-ticking against `now` while
+/// it's still pending.
+fn label(chip: &Chip, model: &SessionModel, now: Option<DateTime<Utc>>) -> String {
+    if chip.count > 1 {
+        return format!("⚒ {} ×{}", chip.name, chip.count);
+    }
+    let dur = model
+        .agent(&chip.agent_id)
+        .and_then(|a| a.tool_calls.get(chip.start))
+        .and_then(|tc| tc.duration(now))
+        .map(|d| format!(" {}", fmt_dur(d)))
+        .unwrap_or_default();
+    format!("⚒ {}{}", chip.name, dur)
+}
+
+/// Which of the three success colours (text → subtle → muted) a run is drawn
+/// in at `age`; failure and pending runs never fade.
+fn fade_band(state: ToolState, age: Duration) -> u8 {
+    if state != ToolState::Ok {
+        return 0;
+    }
+    let f = age.as_secs_f64() / CHIP_TTL.as_secs_f64();
+    if f < 0.45 {
+        0
+    } else if f < 0.75 {
+        1
+    } else {
+        2
+    }
 }
 
 /// Compact tool-duration label: `847ms`, `1.2s`, `42s`, `2m3s`. Sub-second in
@@ -357,14 +421,9 @@ pub fn render(
     let mut slots: HashMap<&str, i32> = HashMap::new();
 
     for chip in &tray.chips {
-        let Some(state) = group_state(model, &chip.agent_id, chip.start, chip.count) else {
+        let Some((state, age)) = visible(chip, model) else {
             continue;
         };
-        // Pending runs persist (age 0); completed ones fade over their afterglow.
-        let age = chip.afterglow.unwrap_or(Duration::ZERO);
-        if chip.afterglow.is_some() && age >= ttl(state) {
-            continue;
-        }
         let Some((left, _, right, bottom)) = flow.node_terminal_rect(&chip.agent_id) else {
             continue;
         };
@@ -380,21 +439,9 @@ pub fn render(
         let y = bottom + *slot;
 
         // Body fades; the state glyph keeps the status-color language so the
-        // chip's ✓/✗ matches the panel's at every instant. A run of >1 call
-        // shows its count (`⚒ bash ×5`); a single tool shows its duration
-        // (`⚒ bash 0.5s`), live-ticking against `now` while it's still pending.
+        // chip's ✓/✗ matches the panel's at every instant.
         let body_style = chip_style(state, age, &palette);
-        let body = if chip.count > 1 {
-            format!("⚒ {} ×{}", chip.name, chip.count)
-        } else {
-            let dur = model
-                .agent(&chip.agent_id)
-                .and_then(|a| a.tool_calls.get(chip.start))
-                .and_then(|tc| tc.duration(now))
-                .map(|d| format!(" {}", fmt_dur(d)))
-                .unwrap_or_default();
-            format!("⚒ {}{}", chip.name, dur)
-        };
+        let body = label(chip, model, now);
         let glyph: Option<(&str, Style)> = match state {
             ToolState::Pending => None,
             ToolState::Ok => Some((" ✓", body_style.fg(palette.success))),
@@ -426,17 +473,11 @@ fn chip_style(state: ToolState, age: Duration, palette: &Palette) -> Style {
         ToolState::Pending => Style::default()
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD),
-        ToolState::Ok => {
-            let f = age.as_secs_f64() / CHIP_TTL.as_secs_f64();
-            let color = if f < 0.45 {
-                palette.text
-            } else if f < 0.75 {
-                palette.subtle
-            } else {
-                palette.muted
-            };
-            Style::default().fg(color)
-        }
+        ToolState::Ok => Style::default().fg(match fade_band(state, age) {
+            0 => palette.text,
+            1 => palette.subtle,
+            _ => palette.muted,
+        }),
     }
 }
 

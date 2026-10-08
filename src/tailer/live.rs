@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::mpsc;
 
@@ -23,20 +23,43 @@ use crate::provider::{
 use super::bytes::{ReadResult, TailState, read_appended};
 use super::{Flow, TailRequest, UiEvent};
 
-/// Poll interval for live tailing.
+/// Poll interval while the session is changing.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Run the newer-session auto-switch scan every N poll ticks (~2s at the
-/// 200ms interval). The scan stats every session file in the project, which
-/// scales with session HISTORY, not activity — unthrottled it would scan 5×/sec
-/// on long-lived projects for an event that almost never happens.
-const SWITCH_SCAN_EVERY: u32 = 10;
+/// After this long without a change the poll slows down, stepping through
+/// [`IDLE_POLL_STEPS`]. A change snaps it back to [`POLL_INTERVAL`].
+const IDLE_AFTER: Duration = Duration::from_secs(30);
 
-/// Auto-switch only after the current session has been silent this many poll
-/// ticks (~30s at 200ms). Long enough that a normal mid-session lull (a slow
-/// tool call, thinking) never trips it — so the switch fires only when the
-/// session is genuinely done, never flapping between two live ones.
-const SWITCH_IDLE_TICKS: u32 = 150;
+/// The slower intervals past [`IDLE_AFTER`], each `(quiet for at least,
+/// poll every)`. A quiet session ends up stat-ing its files every 2 s, and an
+/// append is picked up at most one of those intervals late.
+const IDLE_POLL_STEPS: [(Duration, Duration); 3] = [
+    (Duration::from_secs(30), Duration::from_millis(500)),
+    (Duration::from_secs(32), Duration::from_millis(1000)),
+    (Duration::from_secs(34), Duration::from_millis(2000)),
+];
+
+/// How often the newer-session auto-switch scan runs. The scan stats every
+/// session file in the project, which scales with session HISTORY, not
+/// activity — unthrottled it would run on every poll for an event that
+/// almost never happens.
+const SWITCH_SCAN_EVERY: Duration = Duration::from_secs(2);
+
+/// Auto-switch only after the current session has been silent this long. Long
+/// enough that a normal mid-session lull (a slow tool call, thinking) never
+/// trips it — so the switch fires only when the session is genuinely done,
+/// never flapping between two live ones. Measured in time, not polls, so the
+/// idle slow-down does not stretch it.
+const SWITCH_IDLE: Duration = IDLE_AFTER;
+
+/// The poll interval after `quiet` without a change.
+fn poll_interval(quiet: Duration) -> Duration {
+    IDLE_POLL_STEPS
+        .iter()
+        .rev()
+        .find(|(after, _)| quiet >= *after)
+        .map_or(POLL_INTERVAL, |(_, every)| *every)
+}
 
 /// How far back the auto-switch scan looks. A session newer than the one
 /// being followed is by definition recent; bounding the scan keeps a
@@ -60,11 +83,11 @@ pub(crate) struct LiveSession {
     tracked: HashMap<PathBuf, (Stream, TailState)>,
     /// Whole-read sidecars already stated (by absolute path) — state once.
     seen_whole: HashSet<PathBuf>,
-    /// Poll-tick counter, used to throttle the newer-session scan.
-    ticks: u32,
-    /// Consecutive poll ticks with NO activity (no appended bytes anywhere).
-    /// Gates auto-switch so two concurrently-written sessions can't leapfrog.
-    idle_ticks: u32,
+    /// When a poll last read anything, and when the newer-session scan last
+    /// ran. Drive the idle slow-down, the auto-switch gate, and the scan
+    /// throttle.
+    last_change: Instant,
+    last_scan: Instant,
     /// Tail states captured by a replay bulk snapshot (byte offset plus the
     /// identity of the file read), consumed when each file is first
     /// registered for tailing — so the tail resumes exactly where the snapshot
@@ -104,8 +127,8 @@ impl LiveSession {
             main_stream,
             tracked: HashMap::new(),
             seen_whole: HashSet::new(),
-            ticks: 0,
-            idle_ticks: 0,
+            last_change: Instant::now(),
+            last_scan: Instant::now(),
             seed_states: HashMap::new(),
             seed_streams: HashMap::new(),
         }
@@ -241,8 +264,10 @@ pub(crate) async fn run_live(
     tail_loop(session, session_id, ui_tx, req_rx).await
 }
 
-/// The shared poll loop: every [`POLL_INTERVAL`] read appended bytes and emit a
-/// [`UiEvent::Batch`], staying responsive to switch/exit requests. Both feeders
+/// The shared poll loop: read appended bytes and emit a [`UiEvent::Batch`],
+/// staying responsive to switch/exit requests. The first poll runs at once;
+/// after that every [`POLL_INTERVAL`] while the session changes, slowing to
+/// [`IDLE_POLL_STEPS`] once it has been quiet for [`IDLE_AFTER`]. Both feeders
 /// end here — live tailing after the announce, replay after the bulk hand-off —
 /// so EVERY session keeps tailing and can pick up new appends ("go live"). Auto-
 /// switch to a newer session fires only when `session.follow` is set (a
@@ -253,10 +278,7 @@ pub(crate) async fn tail_loop(
     ui_tx: &mpsc::Sender<UiEvent>,
     req_rx: &mut mpsc::Receiver<TailRequest>,
 ) -> Flow {
-    let mut ticker = tokio::time::interval(POLL_INTERVAL);
-    // Skip the immediate first tick so the loop blocks on the interval.
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
+    let mut wait = Duration::ZERO;
     loop {
         tokio::select! {
             req = req_rx.recv() => {
@@ -265,10 +287,11 @@ pub(crate) async fn tail_loop(
                     None => return Flow::Exit,
                 }
             }
-            _ = ticker.tick() => {
+            _ = tokio::time::sleep(wait) => {
                 if let Some(target) = poll_live(&mut session, &session_id, ui_tx).await {
                     return Flow::Switch { target, follow: session.follow.clone() };
                 }
+                wait = poll_interval(session.last_change.elapsed());
             }
         }
     }
@@ -324,9 +347,10 @@ async fn poll_live(
         return Some(session.reattach());
     }
 
-    // --- emit batch + track idle stretch ---
-    let had_activity = !statements.is_empty();
-    if had_activity {
+    // --- emit batch + track the quiet stretch ---
+    let now = Instant::now();
+    if !statements.is_empty() {
+        session.last_change = now;
         let _ = ui_tx
             .send(UiEvent::Batch {
                 session_id: session_id.to_string(),
@@ -334,22 +358,17 @@ async fn poll_live(
             })
             .await;
     }
-    session.idle_ticks = if had_activity {
-        0
-    } else {
-        session.idle_ticks.saturating_add(1)
-    };
 
     // --- newer-session auto-switch (throttled — see SWITCH_SCAN_EVERY) ---
     // Only switch once THIS session has been quiet for a while: otherwise two
     // sessions written concurrently in one project leapfrog each other's
     // mtime and the watcher flaps between them every scan. An idle current
     // session + a newer one = the user moved on, so follow.
-    session.ticks = session.ticks.wrapping_add(1);
-    if session.ticks.is_multiple_of(SWITCH_SCAN_EVERY)
-        && session.idle_ticks >= SWITCH_IDLE_TICKS
+    if now.duration_since(session.last_scan) >= SWITCH_SCAN_EVERY
+        && now.duration_since(session.last_change) >= SWITCH_IDLE
         && let Some(cwd) = &session.follow
     {
+        session.last_scan = now;
         let since = SystemTime::now()
             .checked_sub(SWITCH_LOOKBACK)
             .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -453,6 +472,20 @@ mod tests {
         let main = dir.join(format!("{uuid}.jsonl"));
         std::fs::write(&main, main_lines).unwrap();
         (dir, main)
+    }
+
+    /// A session that keeps changing is polled every 200 ms; one that has been
+    /// quiet for 30 s slows to 500 ms, then 1 s, then 2 s, and a change (quiet
+    /// back to zero) returns it to 200 ms.
+    #[test]
+    fn backoff_schedule() {
+        let ms = |quiet_ms: u64| poll_interval(Duration::from_millis(quiet_ms)).as_millis();
+        assert_eq!(ms(0), 200);
+        assert_eq!(ms(29_999), 200);
+        assert_eq!(ms(31_000), 500);
+        assert_eq!(ms(32_000), 1000);
+        assert_eq!(ms(34_000), 2000);
+        assert_eq!(ms(600_000), 2000);
     }
 
     #[test]
