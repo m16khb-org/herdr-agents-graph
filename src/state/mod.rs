@@ -26,6 +26,7 @@ pub use self::timeline::Timeline;
 pub use self::view::{Flash, HitMap, LaneAxis, Selection, Snack, View};
 
 use self::session::SessionModel;
+use self::view::{FoldSet, Row, fold_card_id, fold_of_card};
 use crate::tailer::UiEvent;
 
 /// Whether the app is watching a live session or replaying a finished one.
@@ -244,6 +245,13 @@ pub struct App {
     pub utc_offset: chrono::FixedOffset,
     /// Statuses as of the last sync, to notice changes worth a flash.
     last_statuses: std::collections::HashMap<String, session::AgentStatus>,
+    /// Parents whose done subagents the user unfolded (`enter` on a fold).
+    pub expanded_folds: std::collections::HashSet<String>,
+    /// Where folded agents' cards stood, so they come back to the same spot.
+    pub parked_positions: std::collections::HashMap<String, rataflow::types::Position>,
+    /// The folds the graph was last synced with — see
+    /// [`reconcile_folds`](Self::reconcile_folds).
+    synced_folds: FoldSet,
 }
 
 impl App {
@@ -270,7 +278,9 @@ impl App {
             pending_seek: None,
             snapshots: Vec::new(),
             ants_ms: 0,
-            view: View::Now,
+            // The herdr key launches with no view argument, so this is what
+            // opening shows: the graph.
+            view: View::Graph,
             selection: Selection::default(),
             snackbar: None,
             flash: None,
@@ -280,6 +290,9 @@ impl App {
             clock: web_time::Instant::now(),
             utc_offset: *chrono::Local::now().offset(),
             last_statuses: Default::default(),
+            expanded_folds: Default::default(),
+            parked_positions: Default::default(),
+            synced_folds: FoldSet::default(),
         }
     }
 
@@ -500,6 +513,13 @@ impl App {
                 self.current_session_id = session_id.clone();
                 self.session = SessionModel::new(session_id);
                 self.flow = graph::new_flow();
+                // Ids repeat across sessions (the root is always `main`, omp
+                // task names recur), so what the user unfolded or dragged in
+                // the old session must not carry over.
+                self.expanded_folds.clear();
+                self.parked_positions.clear();
+                self.synced_folds = FoldSet::default();
+                self.selection.folded = None;
                 // A different session (or a truncated one) shares nothing with
                 // the rungs we hold, and a fresh `Timeline` restarts the
                 // generation counter — so they cannot be told apart by it.
@@ -669,7 +689,12 @@ impl App {
             // The recording is over: every interactive agent goes idle
             // (completion is unclaimable; activity is provably absent).
             self.session.end_of_stream();
-            self.resync();
+            // Settling is what folds a finished replay's done subagents, and
+            // this sync already records the folds, so `reconcile_folds` will
+            // not see them change: re-frame here as it would.
+            if self.resync() && self.camera == Camera::Overview {
+                self.flow.request_fit_view();
+            }
             self.note_status_changes(true);
         }
     }
@@ -792,17 +817,62 @@ impl App {
         // scrubbed back (so the as-of-then state shows, no wall-clock bleed).
         let now = self.timeline.now_reference();
         self.session.recompute_liveness(now);
-        // Layout is user-driven: a Sugiyama pass on every new node reflows the
-        // whole graph and reads as "jumpy" as a session grows. So sync NEVER
-        // auto-relayouts — new nodes keep their local placement (below parent,
-        // fanned past siblings) and nothing existing moves until the user asks
-        // to tidy (`r`, or re-engaging the camera with `o`/`f`). `layout_dirty`
-        // tracks that there is un-applied growth for the on-demand path.
-        let structural = graph::sync(&mut self.flow, &self.session, false);
+        self.sync_graph()
+    }
+
+    /// Project the model onto the flow, the current folds folded away.
+    ///
+    /// Layout is user-driven: a Sugiyama pass on every new node reflows the
+    /// whole graph and reads as "jumpy" as a session grows. So sync NEVER
+    /// auto-relayouts — new nodes keep their local placement (below parent,
+    /// fanned past siblings), folded cards come back where they stood, and
+    /// nothing existing moves until the user asks to tidy (`r`, or
+    /// re-engaging the camera with `o`/`f`). `layout_dirty` tracks that there
+    /// is un-applied growth for the on-demand path. Returns whether the
+    /// structure changed.
+    fn sync_graph(&mut self) -> bool {
+        let folds = self.folds();
+        let structural = graph::sync(
+            &mut self.flow,
+            &self.session,
+            &folds,
+            &mut self.parked_positions,
+            false,
+        );
+        self.synced_folds = folds;
         if structural {
             self.layout_dirty = true;
         }
         structural
+    }
+
+    /// Whether a finished replay sits at its end: the recording is over, so
+    /// a done subagent will not come back. Derived every time rather than
+    /// stored, so it holds again after a seek back and a return to the end,
+    /// and lets go when the file grows.
+    pub fn settled(&self) -> bool {
+        self.timeline.replay && self.timeline.ended() && self.timeline.at_edge()
+    }
+
+    /// The done subagents folded away right now.
+    pub fn folds(&self) -> FoldSet {
+        view::fold_set(&self.session, &self.expanded_folds, self.settled())
+    }
+
+    /// Bring the graph in line with the folds, whatever changed them: a model
+    /// change, time alone, a seek, the replay settling or the file growing
+    /// under a paused end, or the user unfolding. Called once per loop turn;
+    /// re-syncs only when the folds differ from what the graph was synced
+    /// with. A fold moves no card (layout stays on `r`); the Overview camera
+    /// re-frames. Returns whether the graph changed.
+    pub fn reconcile_folds(&mut self) -> bool {
+        if self.folds() == self.synced_folds {
+            return false;
+        }
+        if self.sync_graph() && self.camera == Camera::Overview {
+            self.flow.request_fit_view();
+        }
+        true
     }
 
     /// Tidy the graph on demand (`r`): run Sugiyama now and reframe for the
@@ -840,9 +910,11 @@ impl App {
         let flipped = self.session.recompute_liveness(now);
         if flipped {
             self.session.recompute_group_status();
-            // Status flips never change topology, so this is a content-only sync;
-            // layout stays user-driven (no auto-relayout — see `resync`).
-            graph::sync(&mut self.flow, &self.session, false);
+            // Time alone can move a quiet subagent between Running and Done,
+            // which forms or dissolves a fold: a structural change.
+            if self.sync_graph() && self.camera == Camera::Overview {
+                self.flow.request_fit_view();
+            }
             self.note_status_changes(true);
         }
         let following = self.camera == Camera::Follow;
@@ -871,8 +943,9 @@ impl App {
     }
 
     /// Glide the camera so `id`'s node ends up centered in the canvas — the
-    /// shared move behind Follow's tracking and click-to-center. Quiet no-op
-    /// for an unknown id or before the first render.
+    /// shared move behind Follow's tracking and click-to-center. A folded
+    /// agent is centered by its fold's card. Quiet no-op for an unknown id or
+    /// before the first render.
     ///
     /// The pan always glides. `clamp_zoom` additionally snaps the zoom into the
     /// card-readable band — raised to [`FOLLOW_ZOOM`], then clamped down so the
@@ -883,7 +956,10 @@ impl App {
     /// mismatch reads as jumpy, and Manual = the user's camera). Idempotent when
     /// already at the target, so Follow's per-tick re-tracking never restarts it.
     pub fn center_node(&mut self, id: &str, clamp_zoom: bool) {
-        let Some(node) = self.flow.node(id) else {
+        let Some(node) = self.flow.node(id).or_else(|| {
+            let parent = self.synced_folds.member_of.get(id)?;
+            self.flow.node(&fold_card_id(parent))
+        }) else {
             return;
         };
         let (w, h) = (node.width, node.height);
@@ -996,17 +1072,42 @@ impl App {
     /// Select `id` (or nothing) as the user's own choice: the detail list
     /// returns to its newest call, the graph's selection mirrors it (quietly,
     /// so no flow event echoes back), the graph glides to it, and Follow hands
-    /// the camera to the user.
+    /// the camera to the user. Selecting nothing also lets go of a fold.
     pub fn select_agent(&mut self, id: Option<String>) {
-        if self.selection.agent == id {
+        if self.selection.agent == id && self.selection.folded.is_none() {
             return;
         }
+        self.take_camera();
+        self.mirror_selection(id);
+        self.pending_center = self.selection.agent.clone();
+    }
+
+    /// Select the fold under `parent` as the user's own choice — the fold's
+    /// counterpart of [`select_agent`](Self::select_agent).
+    pub fn select_fold(&mut self, parent: String) {
+        if self.selection.folded.as_deref() == Some(parent.as_str()) {
+            return;
+        }
+        self.take_camera();
+        let card = fold_card_id(&parent);
+        if self.flow.node(&card).is_some() {
+            self.flow.select_node(&card);
+        } else {
+            self.flow.clear_selection();
+        }
+        self.selection.agent = None;
+        self.selection.folded = Some(parent);
+        self.selection.expanded = false;
+        self.selection.reset_scroll();
+        self.pending_center = Some(card);
+    }
+
+    /// A user's selection takes the camera from Follow.
+    fn take_camera(&mut self) {
         if self.camera == Camera::Follow {
             self.camera = Camera::Manual;
             self.camera_glide = None;
         }
-        self.mirror_selection(id);
-        self.pending_center = self.selection.agent.clone();
     }
 
     /// Point the selection at `id` without any of a user gesture's side
@@ -1017,28 +1118,130 @@ impl App {
             None => self.flow.clear_selection(),
         }
         self.selection.agent = id;
+        self.selection.folded = None;
         self.selection.expanded = false;
         self.selection.reset_scroll();
     }
 
-    /// Move the selection `step` rows along the tree (`j`/`k`). Starts at the
-    /// root when nothing is selected; stops at either end.
+    /// Move the selection `step` rows (`j`/`k`): along the Now view's rows,
+    /// folds included, or on the lanes along every agent, since the lanes
+    /// draw them all. A selected fold steps on the lanes from its first
+    /// member. Starts at the root when nothing is selected; stops at either
+    /// end.
     pub fn select_step(&mut self, step: isize) {
-        let rows = self.session.tree_order();
+        let folds = self.folds();
+        let rows = if self.view == View::Lanes {
+            self.session
+                .tree_order()
+                .into_iter()
+                .map(|(id, depth)| Row::Agent { id, depth })
+                .collect()
+        } else {
+            view::rows(&self.session, &folds)
+        };
         if rows.is_empty() {
             return;
         }
-        let current = self
-            .selection
-            .agent
-            .as_deref()
-            .and_then(|id| rows.iter().position(|(r, _)| *r == id));
+        let agent = self.selection.agent.as_deref().or_else(|| {
+            let parent = self.selection.folded.as_deref()?;
+            folds.by_parent.get(parent)?.first().map(String::as_str)
+        });
+        let fold = self.selection.folded.as_deref().or_else(|| {
+            let id = self.selection.agent.as_deref()?;
+            folds.member_of.get(id).map(String::as_str)
+        });
+        let current = rows.iter().position(|row| match *row {
+            Row::Agent { id, .. } => agent == Some(id),
+            Row::Folded { parent, .. } => fold == Some(parent),
+        });
         let next = match current {
             None => 0,
             Some(at) => (at as isize + step).clamp(0, rows.len() as isize - 1) as usize,
         };
-        let id = rows[next].0.to_string();
-        self.select_agent(Some(id));
+        match rows[next] {
+            Row::Agent { id, .. } => {
+                let id = id.to_string();
+                self.select_agent(Some(id));
+            }
+            Row::Folded { parent, .. } => {
+                let parent = parent.to_string();
+                self.select_fold(parent);
+            }
+        }
+    }
+
+    /// In the views that fold (Now, Graph), a selected agent a fold hides
+    /// becomes a selection of that fold, and a selected fold that has come
+    /// apart is let go. The lanes draw every agent, so there the selection
+    /// stays as it is. Called on entering a view and before every frame.
+    pub fn normalize_fold_selection(&mut self) {
+        if self.view == View::Lanes {
+            return;
+        }
+        let folds = self.folds();
+        let hiding = self
+            .selection
+            .agent
+            .as_ref()
+            .and_then(|id| folds.member_of.get(id));
+        if let Some(parent) = hiding {
+            self.selection.folded = Some(parent.clone());
+            self.selection.agent = None;
+            self.selection.expanded = false;
+            self.selection.detail = false;
+        } else if self
+            .selection
+            .folded
+            .as_ref()
+            .is_some_and(|p| !folds.by_parent.contains_key(p))
+        {
+            self.selection.folded = None;
+        }
+    }
+
+    /// Unfold the selected fold (`enter`): its members come back, and the
+    /// first of them is selected. Returns whether a fold was selected.
+    pub fn expand_fold(&mut self) -> bool {
+        let Some(parent) = self.selection.folded.clone() else {
+            return false;
+        };
+        let first = self
+            .folds()
+            .by_parent
+            .get(&parent)
+            .and_then(|members| members.first().cloned());
+        self.expanded_folds.insert(parent);
+        self.reconcile_folds();
+        if first.is_some() {
+            self.select_agent(first);
+        }
+        true
+    }
+
+    /// Fold the selected agent back into the fold it was unfolded from
+    /// (`esc`), and select that fold. Returns whether there was one.
+    pub fn collapse_fold(&mut self) -> bool {
+        let Some(id) = self.selection.agent.as_deref() else {
+            return false;
+        };
+        let settled = self.settled();
+        // A direct member only: `member_of` also holds descendants, so with
+        // nested folds unfolded it would match an ancestor's fold too.
+        let parent = self.expanded_folds.iter().find(|p| {
+            let mut rest = self.expanded_folds.clone();
+            rest.remove(*p);
+            view::fold_set(&self.session, &rest, settled)
+                .by_parent
+                .get(*p)
+                .is_some_and(|members| members.iter().any(|m| m == id))
+        });
+        let Some(parent) = parent.cloned() else {
+            return false;
+        };
+        self.expanded_folds.remove(&parent);
+        self.reconcile_folds();
+        self.select_fold(parent);
+        true
     }
 
     /// Switch the body to `view`.
@@ -1048,10 +1251,15 @@ impl App {
         }
         self.view = view;
         self.selection.detail = false;
+        self.normalize_fold_selection();
         // The graph keeps its own camera; bring the selection into its frame
         // once it is drawn.
         if view == View::Graph {
-            self.pending_center = self.selection.agent.clone();
+            self.pending_center = self
+                .selection
+                .agent
+                .clone()
+                .or_else(|| self.selection.folded.as_deref().map(fold_card_id));
         }
     }
 
@@ -1159,7 +1367,11 @@ impl App {
                 self.camera_glide = None;
             }
             if let FlowEvent::SelectionChanged { node_ids, .. } = &event {
-                self.selection.agent = node_ids.first().cloned();
+                // A fold's card selects the fold, not an agent.
+                let node = node_ids.first();
+                let fold = node.and_then(|id| fold_of_card(id));
+                self.selection.folded = fold.map(str::to_string);
+                self.selection.agent = node.filter(|_| fold.is_none()).cloned();
                 self.selection.expanded = false;
                 self.selection.reset_scroll();
                 // Pan the selected node to center (pan-only — the arrow-nav path
@@ -1230,6 +1442,15 @@ mod tests {
         });
         // …but a fresh session re-engages the default.
         assert_eq!(app.camera, Camera::Overview);
+    }
+
+    /// The herdr key opens the binary with no view argument, so the first
+    /// screen is whatever `App::new` starts on: the graph.
+    #[test]
+    fn app_opens_on_the_graph_view() {
+        for mode in [Mode::Live, Mode::Replay] {
+            assert_eq!(App::new("s".into(), mode).view, View::Graph);
+        }
     }
 
     #[test]
@@ -2042,5 +2263,362 @@ mod tests {
         let mut want = got.clone();
         want.sort();
         assert_eq!(got, want);
+    }
+
+    // Folding done subagents. The omp fixture played to its end has `main`
+    // with `Reviewer` and `__sidecar` done and `Helper` stopped.
+
+    /// The rows as plain strings: an agent's id, or `fold:<parent>[members]`.
+    fn row_keys(app: &App) -> Vec<String> {
+        let folds = app.folds();
+        view::rows(&app.session, &folds)
+            .into_iter()
+            .map(|row| match row {
+                Row::Agent { id, .. } => id.to_string(),
+                Row::Folded {
+                    parent, members, ..
+                } => format!("fold:{parent}[{}]", members.join(",")),
+            })
+            .collect()
+    }
+
+    /// The graph holds exactly one node per row: each shown agent, and one
+    /// card per fold.
+    fn assert_graph_matches_rows(app: &App) {
+        let folds = app.folds();
+        let want: std::collections::BTreeSet<String> = view::rows(&app.session, &folds)
+            .into_iter()
+            .map(|row| match row {
+                Row::Agent { id, .. } => id.to_string(),
+                Row::Folded { parent, .. } => fold_card_id(parent),
+            })
+            .collect();
+        let have: std::collections::BTreeSet<String> =
+            app.flow.nodes().map(|n| n.id.clone()).collect();
+        assert_eq!(have, want);
+    }
+
+    fn fold_fixture() -> Option<App> {
+        #[cfg(feature = "native")]
+        let app = crate::ui::snapshots::fixture_app();
+        #[cfg(not(feature = "native"))]
+        let app = None;
+        app
+    }
+
+    #[test]
+    fn done_siblings_fold_in_rows() {
+        let Some(app) = fold_fixture() else {
+            return;
+        };
+        assert_eq!(
+            row_keys(&app),
+            ["main", "fold:main[Reviewer,__sidecar]", "Helper"]
+        );
+        assert_graph_matches_rows(&app);
+    }
+
+    /// The selection never decides what folds, so a lane click or a seek
+    /// leaves the graph and the Now rows in agreement.
+    #[test]
+    fn done_siblings_fold_graph_matches_now() {
+        let Some(mut app) = fold_fixture() else {
+            return;
+        };
+        app.set_view(View::Lanes);
+        app.select_agent(Some("Reviewer".into()));
+        app.reconcile_folds();
+        assert_eq!(app.selected_agent_id().as_deref(), Some("Reviewer"));
+        assert!(row_keys(&app).contains(&"fold:main[Reviewer,__sidecar]".to_string()));
+        assert_graph_matches_rows(&app);
+
+        app.seek_to_fraction(0.0);
+        app.reconcile_folds();
+        assert_graph_matches_rows(&app);
+    }
+
+    /// A live subagent called done only because it went quiet can resume,
+    /// so it never folds.
+    #[test]
+    fn done_siblings_fold_skips_live_heuristic_done() {
+        let old = chrono::Utc::now() - chrono::Duration::seconds(600);
+        let agent = |id: &str, parent: Option<&str>| Fact {
+            agent: Some(id.into()),
+            ts: Some(old),
+            kind: FactKind::Agent {
+                kind: if parent.is_some() {
+                    crate::fact::AgentKind::Subagent
+                } else {
+                    crate::fact::AgentKind::Main
+                },
+                parent: parent.map(str::to_string),
+                agent_type: Some(id.into()),
+                description: None,
+                spawned_by: None,
+                interactive: parent.is_none(),
+            },
+        };
+        let mut app = App::new("s".into(), Mode::Live);
+        app.handle_ui_event(UiEvent::Batch {
+            session_id: "s".into(),
+            statements: vec![Statement {
+                at: Some(old),
+                facts: vec![
+                    agent(session::MAIN_ID, None),
+                    agent("a", Some(session::MAIN_ID)),
+                    agent("b", Some(session::MAIN_ID)),
+                ],
+            }],
+        });
+        for id in ["a", "b"] {
+            assert_eq!(
+                app.session.agent(id).unwrap().status,
+                session::AgentStatus::Done,
+                "{id} went quiet"
+            );
+        }
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "a", "b"]);
+        assert_graph_matches_rows(&app);
+    }
+
+    /// `settled` is derived, not latched: back to the start and to the end
+    /// again, the fold returns.
+    #[test]
+    fn done_siblings_fold_survives_seek_back_and_end() {
+        let Some(mut app) = fold_fixture() else {
+            return;
+        };
+        app.seek_to_fraction(0.0);
+        app.go_live();
+        app.tick_timeline(std::time::Duration::ZERO);
+        assert!(row_keys(&app).contains(&"fold:main[Reviewer,__sidecar]".to_string()));
+        assert_graph_matches_rows(&app);
+    }
+
+    /// main → {A, B} done, A → {C1, C2} done, replayed to its end.
+    fn nested_tree_app() -> App {
+        let at = chrono::DateTime::from_timestamp(1_780_000_000, 0).unwrap();
+        let fact = |id: &str, kind: FactKind| Fact {
+            agent: Some(id.into()),
+            ts: Some(at),
+            kind,
+        };
+        let agent = |id: &str, parent: &str| {
+            fact(
+                id,
+                FactKind::Agent {
+                    kind: crate::fact::AgentKind::Subagent,
+                    parent: Some(parent.into()),
+                    agent_type: Some(id.into()),
+                    description: None,
+                    spawned_by: None,
+                    interactive: false,
+                },
+            )
+        };
+        let main = session::MAIN_ID;
+        let mut facts = vec![fact(
+            main,
+            FactKind::Agent {
+                kind: crate::fact::AgentKind::Main,
+                parent: None,
+                agent_type: Some("main".into()),
+                description: None,
+                spawned_by: None,
+                interactive: true,
+            },
+        )];
+        for (id, parent) in [("A", main), ("B", main), ("C1", "A"), ("C2", "A")] {
+            facts.push(agent(id, parent));
+            facts.push(fact(id, FactKind::Ended(crate::fact::AgentStatus::Done)));
+        }
+        let mut app = App::new("s".into(), Mode::Replay);
+        app.handle_ui_event(UiEvent::ReplayLoaded {
+            session_id: "s".into(),
+            items: vec![crate::tailer::ReplayItem::new(Statement {
+                at: Some(at),
+                facts,
+            })],
+            speed: 8.0,
+            info: Default::default(),
+        });
+        app.go_live();
+        app.tick_timeline(std::time::Duration::ZERO);
+        app
+    }
+
+    /// The hidden A starts no fold of its own, a selected C1 shows as main's
+    /// fold, and with both main and A unfolded `esc` on C1 closes A's fold
+    /// only — whatever order the expanded parents sit in, so each round uses
+    /// a fresh app (and a fresh hash seed).
+    #[test]
+    fn done_siblings_fold_nested_tree() {
+        let main = session::MAIN_ID;
+        for _ in 0..32 {
+            let mut app = nested_tree_app();
+            assert_eq!(row_keys(&app), [main, "fold:main[A,B]"]);
+            assert_graph_matches_rows(&app);
+            app.selection.agent = Some("C1".into());
+            app.normalize_fold_selection();
+            assert_eq!(app.selection.folded.as_deref(), Some(main));
+            assert_eq!(app.selection.agent, None);
+
+            app.expand_fold();
+            assert_eq!(row_keys(&app), [main, "A", "fold:A[C1,C2]", "B"]);
+            assert_graph_matches_rows(&app);
+
+            app.select_fold("A".into());
+            app.expand_fold();
+            assert_eq!(app.selected_agent_id().as_deref(), Some("C1"));
+            assert!(app.collapse_fold());
+            assert_eq!(app.selection.folded.as_deref(), Some("A"));
+            assert!(app.expanded_folds.contains(main));
+            assert!(!app.expanded_folds.contains("A"));
+        }
+    }
+
+    /// A subagent open full-size that then folds away closes its detail:
+    /// otherwise an invisible detail keeps `j`/`k` scrolling nothing.
+    #[test]
+    fn folding_the_detailed_agent_closes_the_detail() {
+        let Some(mut app) = fold_fixture() else {
+            return;
+        };
+        let before_end = app.timeline.head_ts().unwrap() - chrono::Duration::seconds(1);
+        app.seek(before_end);
+        app.select_agent(Some("Reviewer".into()));
+        app.selection.detail = true;
+        app.go_live();
+        app.tick_timeline(std::time::Duration::ZERO);
+        app.normalize_fold_selection();
+        assert_eq!(app.selection.folded.as_deref(), Some(session::MAIN_ID));
+        assert!(!app.selection.detail);
+    }
+
+    /// Siblings already done for good when a live session is first read fold
+    /// before any of them reached the canvas; the card still lands below its
+    /// parent, not on top of it.
+    #[test]
+    fn a_fold_formed_on_first_load_sits_below_its_parent() {
+        let at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        let fact = |id: &str, kind: FactKind| Fact {
+            agent: Some(id.into()),
+            ts: Some(at),
+            kind,
+        };
+        let agent = |id: &str, main: bool| {
+            fact(
+                id,
+                FactKind::Agent {
+                    kind: if main {
+                        crate::fact::AgentKind::Main
+                    } else {
+                        crate::fact::AgentKind::Subagent
+                    },
+                    parent: (!main).then(|| session::MAIN_ID.to_string()),
+                    agent_type: Some(id.into()),
+                    description: None,
+                    spawned_by: None,
+                    interactive: main,
+                },
+            )
+        };
+        let mut facts = vec![agent(session::MAIN_ID, true)];
+        for id in ["a", "b"] {
+            facts.push(agent(id, false));
+            facts.push(fact(id, FactKind::Ended(crate::fact::AgentStatus::Done)));
+        }
+        let mut app = App::new("s".into(), Mode::Live);
+        app.handle_ui_event(UiEvent::ReplayLoaded {
+            session_id: "s".into(),
+            items: vec![crate::tailer::ReplayItem::new(Statement {
+                at: Some(at),
+                facts,
+            })],
+            speed: 8.0,
+            info: Default::default(),
+        });
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "fold:main[a,b]"]);
+        let main = app.flow.node(session::MAIN_ID).unwrap();
+        let card = app.flow.node(&fold_card_id(session::MAIN_ID)).unwrap();
+        assert!(
+            card.position.y >= main.position.y + main.height,
+            "{:?} under {:?}",
+            card.position,
+            main.position
+        );
+    }
+
+    #[test]
+    fn done_siblings_fold_reset_on_session_switch() {
+        let Some(mut app) = fold_fixture() else {
+            return;
+        };
+        assert!(!app.parked_positions.is_empty(), "the members' places");
+        app.expanded_folds.insert(session::MAIN_ID.into());
+        app.select_fold(session::MAIN_ID.into());
+        app.handle_ui_event(UiEvent::SessionReset {
+            session_id: "other".into(),
+        });
+        assert!(app.expanded_folds.is_empty());
+        assert!(app.parked_positions.is_empty());
+        assert_eq!(app.selection.folded, None);
+    }
+
+    /// Paused at the end, the file grows: the replay is no longer settled,
+    /// and nothing but the loop's reconcile re-syncs the graph.
+    #[test]
+    fn done_siblings_fold_follows_growth_while_paused_at_end() {
+        let Some(mut app) = fold_fixture() else {
+            return;
+        };
+        app.toggle_play_pause();
+        let later = app.timeline.head_ts().unwrap() + chrono::Duration::seconds(10);
+        app.handle_ui_event(UiEvent::Batch {
+            session_id: app.current_session_id.clone(),
+            statements: vec![Statement {
+                at: Some(later),
+                facts: vec![Fact {
+                    agent: Some(session::MAIN_ID.into()),
+                    ts: Some(later),
+                    kind: FactKind::Activity,
+                }],
+            }],
+        });
+        assert!(!app.settled());
+        assert!(app.reconcile_folds());
+        assert_graph_matches_rows(&app);
+    }
+
+    /// A card the user dragged keeps its place while a fold takes it off the
+    /// canvas and a seek brings it back; the fold's card sits where its first
+    /// member stood.
+    #[test]
+    fn fold_keeps_dragged_positions_across_seek() {
+        use rataflow::types::Position;
+        let Some(mut app) = fold_fixture() else {
+            return;
+        };
+        assert_eq!(app.camera, Camera::Overview);
+        let before_end = app.timeline.head_ts().unwrap() - chrono::Duration::seconds(1);
+        app.seek(before_end);
+        assert!(
+            app.flow.node("Reviewer").is_some(),
+            "unfolded before the end"
+        );
+        let dragged = Position::new(300.0, 120.0);
+        let aside = Position::new(-50.0, 80.0);
+        app.flow.set_node_position("Reviewer", dragged);
+        app.flow.set_node_position("Helper", aside);
+
+        app.go_live();
+        app.tick_timeline(std::time::Duration::ZERO);
+        assert!(app.flow.node("Reviewer").is_none(), "folded at the end");
+        let card = app.flow.node(&fold_card_id(session::MAIN_ID)).unwrap();
+        assert_eq!(card.position, dragged);
+
+        app.seek(before_end);
+        assert_eq!(app.flow.node("Reviewer").unwrap().position, dragged);
+        assert_eq!(app.flow.node("Helper").unwrap().position, aside);
     }
 }

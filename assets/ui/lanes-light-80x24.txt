@@ -1,4 +1,4 @@
- omp · Demo fixture: rev…   ■ idle  5m02s  77 tok  $0.01    Now   Lanes   Graph
+ omp · Demo fixture: re…   ◦ quiet  5m02s  77 tok  $0.01    Now   Lanes   Graph
   Time           00:00───────────────────00:01───────00:02───────00:03─────now
   ▶● omp         ━task━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    ✓ reviewer                ━
@@ -25,9 +25,9 @@
 ---
 0:0-3 fg=fg.neutral bg=bg.layer-default bold
 0:4-6 fg=fg.neutral-subtle bg=bg.layer-default
-0:7-24 fg=fg.neutral-muted bg=bg.layer-default
-0:25-26 fg=fg.neutral bg=bg.layer-default
-0:27-34 fg=fg.neutral-muted bg=bg.layer-basement
+0:7-23 fg=fg.neutral-muted bg=bg.layer-default
+0:24-25 fg=fg.neutral bg=bg.layer-default
+0:26-34 fg=fg.neutral-muted bg=bg.layer-basement
 0:35-35 fg=fg.neutral bg=bg.layer-default
 0:36-40 fg=fg.neutral-muted bg=bg.layer-default
 0:41-55 fg=fg.neutral-subtle bg=bg.layer-default

@@ -417,6 +417,12 @@ impl Timeline {
         !self.items.is_empty() && self.folded >= self.items.len()
     }
 
+    /// Whether the replay has reached its end (see `just_ended`). Stays set
+    /// across seeks; new appends clear it.
+    pub fn ended(&self) -> bool {
+        self.ended
+    }
+
     /// The "now" reference for liveness derivation. Following a live (follow-
     /// intent) edge it is wall clock — so quiet agents go idle in real time, and
     /// an old session followed to its edge correctly reads as idle. Pacing a

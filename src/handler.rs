@@ -17,7 +17,7 @@ use crossterm::event::{
 };
 use rataflow::EventResponse;
 
-use crate::state::view::contains;
+use crate::state::view::{contains, fold_of_row_key};
 use crate::state::{App, Camera, View};
 
 /// Rows moved per PageUp/PageDown in the detail's tool-call list.
@@ -56,9 +56,12 @@ fn handle_mouse(mouse: &MouseEvent, app: &mut App) {
         }
         return;
     }
-    if left_press && let Some(id) = app.hit.row_at(x, y) {
-        let id = id.to_string();
-        app.select_agent(Some(id));
+    if left_press && let Some(key) = app.hit.row_at(x, y) {
+        let key = key.to_string();
+        match fold_of_row_key(&key) {
+            Some(parent) => app.select_fold(parent.to_string()),
+            None => app.select_agent(Some(key)),
+        }
         return;
     }
     let on_canvas = app.hit.canvas.is_some_and(|r| contains(r, x, y));
@@ -197,9 +200,12 @@ fn to_flow(app: &mut App, key: KeyEvent) {
     app.process_flow_events(response.into_events());
 }
 
-/// `enter`: select the root when nothing is selected; expand the Now row;
-/// then open the full detail.
+/// `enter`: select the root when nothing is selected; unfold a selected
+/// fold; expand the Now row; then open the full detail.
 fn enter(app: &mut App) {
+    if app.expand_fold() {
+        return;
+    }
     let Some(id) = app.selected_agent_id() else {
         app.select_step(0);
         return;
@@ -214,8 +220,8 @@ fn enter(app: &mut App) {
     }
 }
 
-/// `esc`: close the innermost thing open. Following, the selection is the
-/// camera's narration, so it stays.
+/// `esc`: close the innermost thing open, then fold an unfolded agent back.
+/// Following, the selection is the camera's narration, so it stays.
 fn escape(app: &mut App) {
     if app.show_help {
         app.show_help = false;
@@ -225,7 +231,7 @@ fn escape(app: &mut App) {
         app.selection.detail = false;
     } else if app.selection.expanded {
         app.selection.expanded = false;
-    } else if app.camera != Camera::Follow {
+    } else if !app.collapse_fold() && app.camera != Camera::Follow {
         app.select_agent(None);
     }
 }
@@ -493,7 +499,9 @@ mod tests {
             }),
         ];
         for (what, keys, check) in table {
+            // The table is written from the Now view (tab order, `enter`).
             let mut app = session_app();
+            app.set_view(View::Now);
             for code in keys {
                 assert!(!press(&mut app, code), "{what}: no key here quits");
             }
@@ -526,6 +534,7 @@ mod tests {
     #[test]
     fn graph_keys_only_act_on_the_graph() {
         let mut app = session_app();
+        app.set_view(View::Now);
         let zoom = app.flow.viewport.zoom;
         press(&mut app, KeyCode::Char('+'));
         assert_eq!(app.flow.viewport.zoom, zoom, "zoom is the graph's");
@@ -735,5 +744,86 @@ mod tests {
         press(&mut app, KeyCode::Char('o'));
         assert_eq!(app.camera, Camera::Overview);
         assert!(app.layout_dirty, "o frames, it does not relayout");
+    }
+
+    /// One frame of `app` at 120 × 40, as the loop draws it between keys.
+    fn draw_frame(app: &mut App) -> Vec<String> {
+        use crate::ui::seed::theme::{Depth, Mode as ThemeMode, Theme};
+        let theme = Theme::new(ThemeMode::Dark, Depth::TrueColor);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app, &theme)).unwrap();
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// `enter` on a fold unfolds it onto its first member; `esc` folds it
+    /// back with the fold selected.
+    #[test]
+    fn done_siblings_fold_again_on_esc() {
+        let Some(mut app) = crate::ui::snapshots::fixture_app() else {
+            return;
+        };
+        app.select_fold(MAIN_ID.into());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected_agent_id().as_deref(), Some("Reviewer"));
+        assert!(app.folds().by_parent.is_empty(), "unfolded");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.selection.folded.as_deref(), Some(MAIN_ID));
+        assert_eq!(app.selected_agent_id(), None);
+        assert_eq!(
+            app.folds().by_parent.get(MAIN_ID).map(Vec::len),
+            Some(2),
+            "folded again"
+        );
+    }
+
+    #[test]
+    fn done_siblings_fold_row_click_selects_the_fold() {
+        let Some(mut app) = crate::ui::snapshots::fixture_app() else {
+            return;
+        };
+        app.set_view(View::Now);
+        draw_frame(&mut app);
+        let key = crate::state::view::fold_row_key(MAIN_ID);
+        let (rect, _) = *app
+            .hit
+            .rows
+            .iter()
+            .find(|(_, k)| *k == key)
+            .expect("the fold has a row");
+        handle_event(
+            &mouse(MouseEventKind::Down(MouseButton::Left), rect.x, rect.y),
+            &mut app,
+        );
+        assert_eq!(app.selection.folded.as_deref(), Some(MAIN_ID));
+        assert_eq!(app.selected_agent_id(), None);
+    }
+
+    /// The lanes draw every agent, so `j` walks every one of them, folded
+    /// members included, and the frame marks each in turn.
+    #[test]
+    fn lanes_j_reaches_every_lane() {
+        let Some(mut app) = crate::ui::snapshots::fixture_app() else {
+            return;
+        };
+        app.set_view(View::Lanes);
+        for (id, name) in [
+            (MAIN_ID, "omp"),
+            ("Reviewer", "reviewer"),
+            ("Helper", "scout"),
+            ("__sidecar", "subagent"),
+        ] {
+            press(&mut app, KeyCode::Char('j'));
+            let frame = draw_frame(&mut app);
+            assert_eq!(app.selected_agent_id().as_deref(), Some(id));
+            let marked: Vec<&String> = frame.iter().filter(|l| l.contains('▶')).collect();
+            assert!(
+                marked.len() == 1 && marked[0].contains(name),
+                "{name}: {marked:#?}"
+            );
+        }
     }
 }

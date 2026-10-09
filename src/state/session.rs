@@ -1062,7 +1062,7 @@ pub(crate) fn said(s: Option<&str>) -> Option<&str> {
 
 /// One-line excerpt for provenance display: whitespace collapsed, hard cap so
 /// adversarial 38KB lines can't bloat the model.
-fn excerpt(s: &str) -> String {
+pub(crate) fn excerpt(s: &str) -> String {
     let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() > 240 {
         let mut t: String = one.chars().take(239).collect();

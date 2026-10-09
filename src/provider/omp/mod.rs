@@ -83,7 +83,7 @@ pub mod wire;
 
 use crate::fact::{AgentKind, AgentStatus, Fact, FactKind, Outcome, Statement};
 use crate::provider::summary::truncate_summary;
-use crate::state::session::MAIN_ID;
+use crate::state::session::{MAIN_ID, excerpt};
 use wire::{
     ContentBlock, Entry, MessageBody, ToolExecutionStart, UserMessage, is_spawn_tool, parse_line,
 };
@@ -231,7 +231,7 @@ impl Stream {
                         kind: AgentKind::Subagent,
                         parent: Some(MAIN_ID.to_string()),
                         agent_type: si.agent.clone(),
-                        description: None,
+                        description: task_line(si.task.as_ref()),
                         spawned_by: None,
                         interactive: false,
                     },
@@ -554,6 +554,20 @@ fn non_empty(s: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The first sentence line of a child's work order: the first line that,
+/// trimmed, is not blank, not a Markdown heading (`#`), and not an
+/// introduction ending in `:`. omp opens every `task` with the same
+/// introduction line and a heading, so the first non-blank line alone names
+/// no work at all. Cut to the model's one-line excerpt length.
+fn task_line(task: Option<&serde_json::Value>) -> Option<String> {
+    task?
+        .as_str()?
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#') && !l.ends_with(':'))
+        .map(excerpt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,6 +763,42 @@ mod tests {
                 .any(|f| f.agent.as_deref() == Some("TickReviewer")
                     && f.kind == FactKind::Ended(AgentStatus::Done))
         );
+    }
+
+    /// A child's `session_init.task` opens with an introduction line ending
+    /// in `:` and a Markdown heading before the work itself; the description
+    /// is the first line that is neither. A `task` that is not a string
+    /// leaves the description empty without dropping the record.
+    #[test]
+    fn omp_subagent_description_is_the_first_task_line() {
+        let description = |task: &str| {
+            let mut s = Stream::new_child("Worker".to_string());
+            let line = format!(
+                r#"{{"type":"session_init","id":"i","parentId":null,"timestamp":"2026-09-01T00:00:00Z","agent":"task","task":{task}}}"#
+            );
+            let stmts = push_all(&mut s, &[line.as_str()]);
+            stmts
+                .iter()
+                .flat_map(|s| &s.facts)
+                .find_map(|f| match &f.kind {
+                    FactKind::Agent {
+                        agent_type: Some(t),
+                        description,
+                        ..
+                    } if t == "task" => Some(description.clone()),
+                    _ => None,
+                })
+                .expect("session_init states the agent")
+        };
+        assert_eq!(
+            description(
+                r#""You are working on a synthetic project:\n\n# Your task\n\n  Count the   widgets in the demo.\nThen report.""#
+            )
+            .as_deref(),
+            Some("Count the widgets in the demo.")
+        );
+        assert_eq!(description(r##""Intro:\n# Heading\n\n""##), None);
+        assert_eq!(description("42"), None);
     }
 
     #[test]

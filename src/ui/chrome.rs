@@ -153,7 +153,9 @@ fn fit_segments(
 }
 
 /// The emergent transport state as a badge. Away from the live edge the
-/// badge says where the playhead is.
+/// badge says where the playhead is. Its words and glyphs stay clear of the
+/// agent statuses (`● ◌ ✓ ✗ ■`, `active`/`idle`/`stopped`), so the top bar
+/// never seems to contradict an agent row.
 fn transport_badge(app: &App, theme: &Theme) -> Badge {
     let at = app
         .timeline
@@ -162,7 +164,7 @@ fn transport_badge(app: &App, theme: &Theme) -> Badge {
         .unwrap_or_default();
     let n = app.timeline.items.len();
     match app.transport_at(app.clock) {
-        Transport::Live => Badge::new(*theme, Tone::Positive, "live").glyph('●'),
+        Transport::Live => Badge::new(*theme, Tone::Positive, "live").glyph('◉'),
         Transport::Playing => Badge::new(
             *theme,
             Tone::Informative,
@@ -171,7 +173,7 @@ fn transport_badge(app: &App, theme: &Theme) -> Badge {
         .glyph('▶'),
         Transport::Paused => Badge::new(*theme, Tone::Warning, format!("paused · {at}")).glyph('⏸'),
         Transport::History => Badge::new(*theme, Tone::Neutral, format!("past · {at}")).glyph('⏮'),
-        Transport::Idle => Badge::new(*theme, Tone::Neutral, "idle").glyph('■'),
+        Transport::Idle => Badge::new(*theme, Tone::Neutral, "quiet").glyph('◦'),
     }
 }
 
@@ -310,11 +312,11 @@ pub(crate) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
     } else {
         "q · ctrl-c"
     };
-    let rows: [(&str, &str); 16] = [
+    let rows: [(&str, &str); 17] = [
         ("tab 1 2 3", "switch view: now · lanes · graph"),
         ("j k ↑ ↓", "select agent (scroll inside the detail)"),
-        ("enter", "expand the row, again for full detail"),
-        ("esc", "back: close detail, collapse, deselect"),
+        ("enter", "unfold done · expand the row · full detail"),
+        ("esc", "back: close detail, collapse, fold, deselect"),
         ("space", "play / pause"),
         ("[ ]", "previous / next prompt"),
         ("G end", "back to live"),
@@ -322,6 +324,7 @@ pub(crate) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("z", "lanes: fold idle gaps"),
         ("h l H J K L", "graph: pan"),
         ("+ - 0", "graph: zoom in / out / reset"),
+        ("map", "whole graph; the frame is what you see"),
         ("f o r", "follow activity · overview · rearrange"),
         ("s", "pacing: skip idle gaps while replaying"),
         ("i", "session details"),

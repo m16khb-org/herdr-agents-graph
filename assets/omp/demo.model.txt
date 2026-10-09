@@ -2,11 +2,13 @@
       model: anthropic/claude-opus-5
       tools: 1 (1✓ 0✗ 0⏳)   tokens: 54
     ✓ [subagent] reviewer  (done) — id=Reviewer
+        Review the diff.
         model: anthropic/claude-opus-5
         tools: 1 (1✓ 0✗ 0⏳)   tokens: 14
         ↳ prompt: Please review the diff and check the tests.
         ↳ thought: I should fan out a reviewer and a scout.
     ■ [subagent] scout  (stopped) — id=Helper
+        Look around for related tests.
         model: anthropic/claude-sonnet-5
         tools: 1 (1✓ 0✗ 0⏳)   tokens: 5
     ✓ [subagent] __sidecar  (done) — id=__sidecar

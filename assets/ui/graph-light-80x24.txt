@@ -1,33 +1,33 @@
- omp · Demo fixture: rev…   ■ idle  5m02s  77 tok  $0.01    Now   Lanes   Graph
-
-
-╭─────────────────────────╮·        ·        ·
-│ ● omp                   │                            ▄▄▄▄▄▄▄▄
-│ 1 tools · task          │                            ████████
-│ active  54 tok          │                            ▀▀▀▀▀▀▀▀
-│                         │·        ·        ·         ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄
-│                         │                            ███████ ███████ ███████
-╰─────────────────────────╯
-             │
-·        ·   │    ·        ·        ·        ·
-            ╭┴──────────────────────────┬──────────────────────────╮
-            ▼                           ▼                          ▼
-╭──────────────────────╮   ╭───────────────────────╮   ╭───────────────────────╮
-│ ✓ reviewer           │   │ ■ scout               │  ·│ ✓ subagent            │
-│ 1 tools · read       │   │ 1 tools · grep        │   │ 0 tools               │
-│ done  14 tok         │   │ stopped  5 tok        │   │ done  4 tok           │
-│                      │   │                       │   │                       │
-╰──────────────────────╯   ╰───────────────────────╯  ·╰───────────────────────╯
-
-
-
+ omp · Demo fixture: re…   ◦ quiet  5m02s  77 tok  $0.01    Now   Lanes   Graph
+     ╭───────────────────────────────────╮ ·           ·           ·           ·
+     │ ● omp                             │           ╭ map ───────────────────╮
+     │ 1 tool · task                     │           │█████████████──────────┐│
+     │ active  54 tok                    │           │█████████████          ││
+     │                                   │           │█████████████          ││
+     │                                   │           ││                      ││
+     │                                   │ ·         ││                      ││·
+     ╰───────────────────────────────────╯           │███████████  ███████████│
+                        │                            │███████████  ███████████│
+                        │                            │███████████──███████████│
+                        │                            ╰────────────────────────╯
+                     ╭──┴─────────────────────────────────╮
+       ·           · │         ·           ·           ·  │        ·           ·
+                     ▼                                    ▼
+     ╭──────────────────────────────╮     ╭──────────────────────────────╮
+     │ ✓ 2 done                     │     │ ■ scout                      │
+     │ reviewer, subagent           │     │ Look around for related tes… │
+     │ 1 tool                       │     │ 1 tool · grep                │
+     │ done  18 tok                 │     │ stopped  5 tok               │     ·
+     │                              │     │                              │
+     │                              │     │                              │
+     ╰──────────────────────────────╯     ╰──────────────────────────────╯
                           j/k  select  hjkl  pan  +/-  zoom  tab  view  ?  help
 ---
 0:0-3 fg=fg.neutral bg=bg.layer-default bold
 0:4-6 fg=fg.neutral-subtle bg=bg.layer-default
-0:7-24 fg=fg.neutral-muted bg=bg.layer-default
-0:25-26 fg=fg.neutral bg=bg.layer-default
-0:27-34 fg=fg.neutral-muted bg=bg.layer-basement
+0:7-23 fg=fg.neutral-muted bg=bg.layer-default
+0:24-25 fg=fg.neutral bg=bg.layer-default
+0:26-34 fg=fg.neutral-muted bg=bg.layer-basement
 0:35-35 fg=fg.neutral bg=bg.layer-default
 0:36-40 fg=fg.neutral-muted bg=bg.layer-default
 0:41-55 fg=fg.neutral-subtle bg=bg.layer-default
@@ -37,216 +37,226 @@
 0:65-71 fg=fg.neutral-subtle bg=bg.layer-default
 0:72-72 fg=fg.neutral bg=bg.layer-default
 0:73-79 fg=fg.brand-contrast bg=bg.layer-default bold underlined
-1:0-79 fg=fg.neutral bg=bg.layer-basement
-2:0-53 fg=fg.neutral bg=bg.layer-basement
-2:54-78 fg=fg.neutral bg=bg.layer-default
+1:0-4 fg=fg.neutral bg=bg.layer-basement
+1:5-41 fg=fg.brand bg=bg.layer-default
+1:42-42 fg=fg.neutral bg=bg.layer-basement
+1:43-43 fg=stroke.neutral-weak bg=bg.layer-basement
+1:44-54 fg=fg.neutral bg=bg.layer-basement
+1:55-55 fg=stroke.neutral-weak bg=bg.layer-basement
+1:56-66 fg=fg.neutral bg=bg.layer-basement
+1:67-67 fg=stroke.neutral-weak bg=bg.layer-basement
+1:68-78 fg=fg.neutral bg=bg.layer-basement
+1:79-79 fg=stroke.neutral-weak bg=bg.layer-basement
+2:0-4 fg=fg.neutral bg=bg.layer-basement
+2:5-5 fg=fg.brand bg=bg.layer-default
+2:6-6 fg=fg.neutral bg=bg.layer-default
+2:7-8 fg=fg.informative bg=bg.layer-default
+2:9-11 fg=fg.brand bg=bg.layer-default bold
+2:12-40 fg=fg.neutral bg=bg.layer-default
+2:41-41 fg=fg.brand bg=bg.layer-default
+2:42-52 fg=fg.neutral bg=bg.layer-basement
+2:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+2:54-58 fg=fg.neutral-subtle bg=bg.layer-default
+2:59-78 fg=stroke.neutral-weak bg=bg.layer-default
 2:79-79 fg=fg.neutral bg=bg.layer-basement
-3:0-26 fg=fg.brand bg=bg.layer-default
-3:27-27 fg=stroke.neutral-weak bg=bg.layer-basement
-3:28-35 fg=fg.neutral bg=bg.layer-basement
-3:36-36 fg=stroke.neutral-weak bg=bg.layer-basement
-3:37-44 fg=fg.neutral bg=bg.layer-basement
-3:45-45 fg=stroke.neutral-weak bg=bg.layer-basement
-3:46-53 fg=fg.neutral bg=bg.layer-basement
-3:54-54 fg=stroke.neutral-weak bg=bg.layer-default
-3:55-62 fg=fg.neutral bg=stroke.neutral-weak
-3:63-63 fg=stroke.neutral-weak bg=stroke.neutral-weak
-3:64-71 fg=fg.neutral bg=stroke.neutral-weak
-3:72-72 fg=stroke.neutral-weak bg=stroke.neutral-weak
-3:73-77 fg=fg.neutral bg=stroke.neutral-weak
-3:78-78 fg=fg.neutral bg=bg.layer-default
+3:0-4 fg=fg.neutral bg=bg.layer-basement
+3:5-5 fg=fg.brand bg=bg.layer-default
+3:6-6 fg=fg.neutral bg=bg.layer-default
+3:7-19 fg=fg.neutral-subtle bg=bg.layer-default
+3:20-40 fg=fg.neutral bg=bg.layer-default
+3:41-41 fg=fg.brand bg=bg.layer-default
+3:42-52 fg=fg.neutral bg=bg.layer-basement
+3:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+3:54-66 fg=fg.brand bg=bg.layer-default
+3:67-77 fg=fg.neutral bg=bg.layer-default
+3:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 3:79-79 fg=fg.neutral bg=bg.layer-basement
-4:0-0 fg=fg.brand bg=bg.layer-default
-4:1-1 fg=fg.neutral bg=bg.layer-default
-4:2-3 fg=fg.informative bg=bg.layer-default
-4:4-6 fg=fg.brand bg=bg.layer-default bold
-4:7-25 fg=fg.neutral bg=bg.layer-default
-4:26-26 fg=fg.brand bg=bg.layer-default
-4:27-53 fg=fg.neutral bg=bg.layer-basement
-4:54-54 fg=fg.neutral bg=bg.layer-default
-4:55-62 fg=fg.brand bg=stroke.neutral-weak
-4:63-77 fg=fg.neutral bg=stroke.neutral-weak
-4:78-78 fg=fg.neutral bg=bg.layer-default
+4:0-4 fg=fg.neutral bg=bg.layer-basement
+4:5-5 fg=fg.brand bg=bg.layer-default
+4:6-6 fg=fg.neutral bg=bg.layer-default
+4:7-12 fg=fg.informative bg=bg.layer-default
+4:13-20 fg=fg.neutral-subtle bg=bg.layer-default
+4:21-40 fg=fg.neutral bg=bg.layer-default
+4:41-41 fg=fg.brand bg=bg.layer-default
+4:42-52 fg=fg.neutral bg=bg.layer-basement
+4:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+4:54-66 fg=fg.brand bg=bg.layer-default
+4:67-77 fg=fg.neutral bg=bg.layer-default
+4:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 4:79-79 fg=fg.neutral bg=bg.layer-basement
-5:0-0 fg=fg.brand bg=bg.layer-default
-5:1-1 fg=fg.neutral bg=bg.layer-default
-5:2-15 fg=fg.neutral-subtle bg=bg.layer-default
-5:16-25 fg=fg.neutral bg=bg.layer-default
-5:26-26 fg=fg.brand bg=bg.layer-default
-5:27-53 fg=fg.neutral bg=bg.layer-basement
-5:54-54 fg=fg.neutral bg=bg.layer-default
-5:55-62 fg=fg.brand bg=stroke.neutral-weak
-5:63-77 fg=fg.neutral bg=stroke.neutral-weak
-5:78-78 fg=fg.neutral bg=bg.layer-default
+5:0-4 fg=fg.neutral bg=bg.layer-basement
+5:5-5 fg=fg.brand bg=bg.layer-default
+5:6-40 fg=fg.neutral bg=bg.layer-default
+5:41-41 fg=fg.brand bg=bg.layer-default
+5:42-52 fg=fg.neutral bg=bg.layer-basement
+5:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+5:54-66 fg=fg.brand bg=bg.layer-default
+5:67-77 fg=fg.neutral bg=bg.layer-default
+5:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 5:79-79 fg=fg.neutral bg=bg.layer-basement
-6:0-0 fg=fg.brand bg=bg.layer-default
-6:1-1 fg=fg.neutral bg=bg.layer-default
-6:2-7 fg=fg.informative bg=bg.layer-default
-6:8-15 fg=fg.neutral-subtle bg=bg.layer-default
-6:16-25 fg=fg.neutral bg=bg.layer-default
-6:26-26 fg=fg.brand bg=bg.layer-default
-6:27-53 fg=fg.neutral bg=bg.layer-basement
-6:54-54 fg=fg.neutral bg=bg.layer-default
-6:55-62 fg=fg.brand bg=stroke.neutral-weak
-6:63-77 fg=fg.neutral bg=stroke.neutral-weak
-6:78-78 fg=fg.neutral bg=bg.layer-default
+6:0-4 fg=fg.neutral bg=bg.layer-basement
+6:5-5 fg=fg.brand bg=bg.layer-default
+6:6-40 fg=fg.neutral bg=bg.layer-default
+6:41-41 fg=fg.brand bg=bg.layer-default
+6:42-52 fg=fg.neutral bg=bg.layer-basement
+6:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+6:54-77 fg=fg.neutral bg=bg.layer-default
+6:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 6:79-79 fg=fg.neutral bg=bg.layer-basement
-7:0-0 fg=fg.brand bg=bg.layer-default
-7:1-25 fg=fg.neutral bg=bg.layer-default
-7:26-26 fg=fg.brand bg=bg.layer-default
-7:27-27 fg=stroke.neutral-weak bg=bg.layer-basement
-7:28-35 fg=fg.neutral bg=bg.layer-basement
-7:36-36 fg=stroke.neutral-weak bg=bg.layer-basement
-7:37-44 fg=fg.neutral bg=bg.layer-basement
-7:45-45 fg=stroke.neutral-weak bg=bg.layer-basement
-7:46-53 fg=fg.neutral bg=bg.layer-basement
-7:54-54 fg=stroke.neutral-weak bg=bg.layer-default
-7:55-61 fg=fg.neutral-subtle bg=stroke.neutral-weak
-7:62-62 fg=fg.neutral bg=stroke.neutral-weak
-7:63-69 fg=fg.neutral-subtle bg=stroke.neutral-weak
-7:70-70 fg=fg.neutral bg=stroke.neutral-weak
-7:71-77 fg=fg.neutral-subtle bg=stroke.neutral-weak
-7:78-78 fg=fg.neutral bg=bg.layer-default
-7:79-79 fg=fg.neutral bg=bg.layer-basement
-8:0-0 fg=fg.brand bg=bg.layer-default
-8:1-25 fg=fg.neutral bg=bg.layer-default
-8:26-26 fg=fg.brand bg=bg.layer-default
-8:27-53 fg=fg.neutral bg=bg.layer-basement
-8:54-54 fg=fg.neutral bg=bg.layer-default
-8:55-61 fg=fg.neutral-subtle bg=stroke.neutral-weak
-8:62-62 fg=fg.neutral bg=stroke.neutral-weak
-8:63-69 fg=fg.neutral-subtle bg=stroke.neutral-weak
-8:70-70 fg=fg.neutral bg=stroke.neutral-weak
-8:71-77 fg=fg.neutral-subtle bg=stroke.neutral-weak
-8:78-78 fg=fg.neutral bg=bg.layer-default
+7:0-4 fg=fg.neutral bg=bg.layer-basement
+7:5-5 fg=fg.brand bg=bg.layer-default
+7:6-40 fg=fg.neutral bg=bg.layer-default
+7:41-41 fg=fg.brand bg=bg.layer-default
+7:42-42 fg=fg.neutral bg=bg.layer-basement
+7:43-43 fg=stroke.neutral-weak bg=bg.layer-basement
+7:44-52 fg=fg.neutral bg=bg.layer-basement
+7:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+7:54-77 fg=fg.neutral bg=bg.layer-default
+7:78-78 fg=stroke.neutral-weak bg=bg.layer-default
+7:79-79 fg=stroke.neutral-weak bg=bg.layer-basement
+8:0-4 fg=fg.neutral bg=bg.layer-basement
+8:5-41 fg=fg.brand bg=bg.layer-default
+8:42-52 fg=fg.neutral bg=bg.layer-basement
+8:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+8:54-64 fg=fg.neutral-muted bg=bg.layer-default
+8:65-66 fg=fg.neutral bg=bg.layer-default
+8:67-77 fg=fg.neutral-muted bg=bg.layer-default
+8:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 8:79-79 fg=fg.neutral bg=bg.layer-basement
-9:0-26 fg=fg.brand bg=bg.layer-default
-9:27-53 fg=fg.neutral bg=bg.layer-basement
-9:54-54 fg=fg.neutral bg=bg.layer-default
-9:55-77 fg=fg.neutral bg=stroke.neutral-weak
-9:78-78 fg=fg.neutral bg=bg.layer-default
+9:0-23 fg=fg.neutral bg=bg.layer-basement
+9:24-24 fg=fg.neutral-subtle bg=bg.layer-basement
+9:25-52 fg=fg.neutral bg=bg.layer-basement
+9:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+9:54-64 fg=fg.neutral-muted bg=bg.layer-default
+9:65-66 fg=fg.neutral bg=bg.layer-default
+9:67-77 fg=fg.neutral-muted bg=bg.layer-default
+9:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 9:79-79 fg=fg.neutral bg=bg.layer-basement
-10:0-12 fg=fg.neutral bg=bg.layer-basement
-10:13-13 fg=fg.neutral-subtle bg=bg.layer-basement
-10:14-53 fg=fg.neutral bg=bg.layer-basement
-10:54-54 fg=fg.neutral bg=bg.layer-default
-10:55-77 fg=fg.neutral bg=stroke.neutral-weak
-10:78-78 fg=fg.neutral bg=bg.layer-default
+10:0-23 fg=fg.neutral bg=bg.layer-basement
+10:24-24 fg=fg.neutral-subtle bg=bg.layer-basement
+10:25-52 fg=fg.neutral bg=bg.layer-basement
+10:53-53 fg=stroke.neutral-weak bg=bg.layer-default
+10:54-64 fg=fg.neutral-muted bg=bg.layer-default
+10:65-66 fg=fg.neutral bg=bg.layer-default
+10:67-77 fg=fg.neutral-muted bg=bg.layer-default
+10:78-78 fg=stroke.neutral-weak bg=bg.layer-default
 10:79-79 fg=fg.neutral bg=bg.layer-basement
-11:0-0 fg=stroke.neutral-weak bg=bg.layer-basement
-11:1-8 fg=fg.neutral bg=bg.layer-basement
-11:9-9 fg=stroke.neutral-weak bg=bg.layer-basement
-11:10-12 fg=fg.neutral bg=bg.layer-basement
-11:13-13 fg=fg.neutral-subtle bg=bg.layer-basement
-11:14-17 fg=fg.neutral bg=bg.layer-basement
-11:18-18 fg=stroke.neutral-weak bg=bg.layer-basement
-11:19-26 fg=fg.neutral bg=bg.layer-basement
-11:27-27 fg=stroke.neutral-weak bg=bg.layer-basement
-11:28-35 fg=fg.neutral bg=bg.layer-basement
-11:36-36 fg=stroke.neutral-weak bg=bg.layer-basement
-11:37-44 fg=fg.neutral bg=bg.layer-basement
-11:45-45 fg=stroke.neutral-weak bg=bg.layer-basement
-11:46-53 fg=fg.neutral bg=bg.layer-basement
-11:54-54 fg=stroke.neutral-weak bg=bg.layer-default
-11:55-62 fg=fg.neutral bg=bg.layer-default
-11:63-63 fg=stroke.neutral-weak bg=bg.layer-default
-11:64-71 fg=fg.neutral bg=bg.layer-default
-11:72-72 fg=stroke.neutral-weak bg=bg.layer-default
-11:73-78 fg=fg.neutral bg=bg.layer-default
+11:0-23 fg=fg.neutral bg=bg.layer-basement
+11:24-24 fg=fg.neutral-subtle bg=bg.layer-basement
+11:25-52 fg=fg.neutral bg=bg.layer-basement
+11:53-78 fg=stroke.neutral-weak bg=bg.layer-default
 11:79-79 fg=fg.neutral bg=bg.layer-basement
-12:0-11 fg=fg.neutral bg=bg.layer-basement
-12:12-67 fg=fg.neutral-subtle bg=bg.layer-basement
-12:68-79 fg=fg.neutral bg=bg.layer-basement
-13:0-11 fg=fg.neutral bg=bg.layer-basement
-13:12-12 fg=fg.neutral-subtle bg=bg.layer-basement
-13:13-39 fg=fg.neutral bg=bg.layer-basement
-13:40-40 fg=fg.neutral-subtle bg=bg.layer-basement
-13:41-66 fg=fg.neutral bg=bg.layer-basement
-13:67-67 fg=fg.neutral-subtle bg=bg.layer-basement
-13:68-79 fg=fg.neutral bg=bg.layer-basement
-14:0-23 fg=stroke.neutral-weak bg=bg.layer-default
-14:24-26 fg=fg.neutral bg=bg.layer-basement
-14:27-51 fg=stroke.neutral-weak bg=bg.layer-default
-14:52-54 fg=fg.neutral bg=bg.layer-basement
-14:55-79 fg=stroke.neutral-weak bg=bg.layer-default
-15:0-0 fg=stroke.neutral-weak bg=bg.layer-default
-15:1-1 fg=fg.neutral bg=bg.layer-default
-15:2-3 fg=fg.positive bg=bg.layer-default
-15:4-11 fg=fg.neutral bg=bg.layer-default bold
-15:12-22 fg=fg.neutral bg=bg.layer-default
-15:23-23 fg=stroke.neutral-weak bg=bg.layer-default
-15:24-26 fg=fg.neutral bg=bg.layer-basement
-15:27-27 fg=stroke.neutral-weak bg=bg.layer-default
-15:28-28 fg=fg.neutral bg=bg.layer-default
-15:29-30 fg=fg.warning bg=bg.layer-default
-15:31-35 fg=fg.neutral bg=bg.layer-default bold
-15:36-50 fg=fg.neutral bg=bg.layer-default
-15:51-51 fg=stroke.neutral-weak bg=bg.layer-default
-15:52-53 fg=fg.neutral bg=bg.layer-basement
-15:54-54 fg=stroke.neutral-weak bg=bg.layer-basement
-15:55-55 fg=stroke.neutral-weak bg=bg.layer-default
-15:56-56 fg=fg.neutral bg=bg.layer-default
-15:57-58 fg=fg.positive bg=bg.layer-default
-15:59-66 fg=fg.neutral bg=bg.layer-default bold
-15:67-78 fg=fg.neutral bg=bg.layer-default
-15:79-79 fg=stroke.neutral-weak bg=bg.layer-default
-16:0-0 fg=stroke.neutral-weak bg=bg.layer-default
-16:1-1 fg=fg.neutral bg=bg.layer-default
-16:2-15 fg=fg.neutral-subtle bg=bg.layer-default
-16:16-22 fg=fg.neutral bg=bg.layer-default
-16:23-23 fg=stroke.neutral-weak bg=bg.layer-default
-16:24-26 fg=fg.neutral bg=bg.layer-basement
-16:27-27 fg=stroke.neutral-weak bg=bg.layer-default
-16:28-28 fg=fg.neutral bg=bg.layer-default
-16:29-42 fg=fg.neutral-subtle bg=bg.layer-default
-16:43-50 fg=fg.neutral bg=bg.layer-default
-16:51-51 fg=stroke.neutral-weak bg=bg.layer-default
-16:52-54 fg=fg.neutral bg=bg.layer-basement
-16:55-55 fg=stroke.neutral-weak bg=bg.layer-default
-16:56-56 fg=fg.neutral bg=bg.layer-default
-16:57-63 fg=fg.neutral-subtle bg=bg.layer-default
-16:64-78 fg=fg.neutral bg=bg.layer-default
-16:79-79 fg=stroke.neutral-weak bg=bg.layer-default
-17:0-0 fg=stroke.neutral-weak bg=bg.layer-default
-17:1-1 fg=fg.neutral bg=bg.layer-default
-17:2-5 fg=fg.positive bg=bg.layer-default
-17:6-13 fg=fg.neutral-subtle bg=bg.layer-default
-17:14-22 fg=fg.neutral bg=bg.layer-default
-17:23-23 fg=stroke.neutral-weak bg=bg.layer-default
-17:24-26 fg=fg.neutral bg=bg.layer-basement
-17:27-27 fg=stroke.neutral-weak bg=bg.layer-default
-17:28-28 fg=fg.neutral bg=bg.layer-default
-17:29-35 fg=fg.warning bg=bg.layer-default
-17:36-42 fg=fg.neutral-subtle bg=bg.layer-default
-17:43-50 fg=fg.neutral bg=bg.layer-default
-17:51-51 fg=stroke.neutral-weak bg=bg.layer-default
-17:52-54 fg=fg.neutral bg=bg.layer-basement
-17:55-55 fg=stroke.neutral-weak bg=bg.layer-default
-17:56-56 fg=fg.neutral bg=bg.layer-default
-17:57-60 fg=fg.positive bg=bg.layer-default
-17:61-67 fg=fg.neutral-subtle bg=bg.layer-default
-17:68-78 fg=fg.neutral bg=bg.layer-default
-17:79-79 fg=stroke.neutral-weak bg=bg.layer-default
-18:0-0 fg=stroke.neutral-weak bg=bg.layer-default
-18:1-22 fg=fg.neutral bg=bg.layer-default
-18:23-23 fg=stroke.neutral-weak bg=bg.layer-default
-18:24-26 fg=fg.neutral bg=bg.layer-basement
-18:27-27 fg=stroke.neutral-weak bg=bg.layer-default
-18:28-50 fg=fg.neutral bg=bg.layer-default
-18:51-51 fg=stroke.neutral-weak bg=bg.layer-default
-18:52-54 fg=fg.neutral bg=bg.layer-basement
-18:55-55 fg=stroke.neutral-weak bg=bg.layer-default
-18:56-78 fg=fg.neutral bg=bg.layer-default
-18:79-79 fg=stroke.neutral-weak bg=bg.layer-default
-19:0-23 fg=stroke.neutral-weak bg=bg.layer-default
-19:24-26 fg=fg.neutral bg=bg.layer-basement
-19:27-51 fg=stroke.neutral-weak bg=bg.layer-default
-19:52-53 fg=fg.neutral bg=bg.layer-basement
-19:54-54 fg=stroke.neutral-weak bg=bg.layer-basement
-19:55-79 fg=stroke.neutral-weak bg=bg.layer-default
-20:0-79 fg=fg.neutral bg=bg.layer-basement
-21:0-79 fg=fg.neutral bg=bg.layer-basement
-22:0-79 fg=fg.neutral bg=bg.layer-basement
+12:0-20 fg=fg.neutral bg=bg.layer-basement
+12:21-58 fg=fg.neutral-subtle bg=bg.layer-basement
+12:59-79 fg=fg.neutral bg=bg.layer-basement
+13:0-6 fg=fg.neutral bg=bg.layer-basement
+13:7-7 fg=stroke.neutral-weak bg=bg.layer-basement
+13:8-18 fg=fg.neutral bg=bg.layer-basement
+13:19-19 fg=stroke.neutral-weak bg=bg.layer-basement
+13:20-20 fg=fg.neutral bg=bg.layer-basement
+13:21-21 fg=fg.neutral-subtle bg=bg.layer-basement
+13:22-30 fg=fg.neutral bg=bg.layer-basement
+13:31-31 fg=stroke.neutral-weak bg=bg.layer-basement
+13:32-42 fg=fg.neutral bg=bg.layer-basement
+13:43-43 fg=stroke.neutral-weak bg=bg.layer-basement
+13:44-54 fg=fg.neutral bg=bg.layer-basement
+13:55-55 fg=stroke.neutral-weak bg=bg.layer-basement
+13:56-57 fg=fg.neutral bg=bg.layer-basement
+13:58-58 fg=fg.neutral-subtle bg=bg.layer-basement
+13:59-66 fg=fg.neutral bg=bg.layer-basement
+13:67-67 fg=stroke.neutral-weak bg=bg.layer-basement
+13:68-78 fg=fg.neutral bg=bg.layer-basement
+13:79-79 fg=stroke.neutral-weak bg=bg.layer-basement
+14:0-20 fg=fg.neutral bg=bg.layer-basement
+14:21-21 fg=fg.neutral-subtle bg=bg.layer-basement
+14:22-57 fg=fg.neutral bg=bg.layer-basement
+14:58-58 fg=fg.neutral-subtle bg=bg.layer-basement
+14:59-79 fg=fg.neutral bg=bg.layer-basement
+15:0-4 fg=fg.neutral bg=bg.layer-basement
+15:5-36 fg=stroke.neutral-weak bg=bg.layer-default
+15:37-41 fg=fg.neutral bg=bg.layer-basement
+15:42-73 fg=stroke.neutral-weak bg=bg.layer-default
+15:74-79 fg=fg.neutral bg=bg.layer-basement
+16:0-4 fg=fg.neutral bg=bg.layer-basement
+16:5-5 fg=stroke.neutral-weak bg=bg.layer-default
+16:6-6 fg=fg.neutral bg=bg.layer-default
+16:7-8 fg=fg.positive bg=bg.layer-default
+16:9-14 fg=fg.neutral bg=bg.layer-default bold
+16:15-35 fg=fg.neutral bg=bg.layer-default
+16:36-36 fg=stroke.neutral-weak bg=bg.layer-default
+16:37-41 fg=fg.neutral bg=bg.layer-basement
+16:42-42 fg=stroke.neutral-weak bg=bg.layer-default
+16:43-43 fg=fg.neutral bg=bg.layer-default
+16:44-45 fg=fg.warning bg=bg.layer-default
+16:46-50 fg=fg.neutral bg=bg.layer-default bold
+16:51-72 fg=fg.neutral bg=bg.layer-default
+16:73-73 fg=stroke.neutral-weak bg=bg.layer-default
+16:74-79 fg=fg.neutral bg=bg.layer-basement
+17:0-4 fg=fg.neutral bg=bg.layer-basement
+17:5-5 fg=stroke.neutral-weak bg=bg.layer-default
+17:6-6 fg=fg.neutral bg=bg.layer-default
+17:7-24 fg=fg.neutral-muted bg=bg.layer-default
+17:25-35 fg=fg.neutral bg=bg.layer-default
+17:36-36 fg=stroke.neutral-weak bg=bg.layer-default
+17:37-41 fg=fg.neutral bg=bg.layer-basement
+17:42-42 fg=stroke.neutral-weak bg=bg.layer-default
+17:43-43 fg=fg.neutral bg=bg.layer-default
+17:44-71 fg=fg.neutral-muted bg=bg.layer-default
+17:72-72 fg=fg.neutral bg=bg.layer-default
+17:73-73 fg=stroke.neutral-weak bg=bg.layer-default
+17:74-79 fg=fg.neutral bg=bg.layer-basement
+18:0-4 fg=fg.neutral bg=bg.layer-basement
+18:5-5 fg=stroke.neutral-weak bg=bg.layer-default
+18:6-6 fg=fg.neutral bg=bg.layer-default
+18:7-12 fg=fg.neutral-subtle bg=bg.layer-default
+18:13-35 fg=fg.neutral bg=bg.layer-default
+18:36-36 fg=stroke.neutral-weak bg=bg.layer-default
+18:37-41 fg=fg.neutral bg=bg.layer-basement
+18:42-42 fg=stroke.neutral-weak bg=bg.layer-default
+18:43-43 fg=fg.neutral bg=bg.layer-default
+18:44-56 fg=fg.neutral-subtle bg=bg.layer-default
+18:57-72 fg=fg.neutral bg=bg.layer-default
+18:73-73 fg=stroke.neutral-weak bg=bg.layer-default
+18:74-79 fg=fg.neutral bg=bg.layer-basement
+19:0-4 fg=fg.neutral bg=bg.layer-basement
+19:5-5 fg=stroke.neutral-weak bg=bg.layer-default
+19:6-6 fg=fg.neutral bg=bg.layer-default
+19:7-10 fg=fg.positive bg=bg.layer-default
+19:11-18 fg=fg.neutral-subtle bg=bg.layer-default
+19:19-35 fg=fg.neutral bg=bg.layer-default
+19:36-36 fg=stroke.neutral-weak bg=bg.layer-default
+19:37-41 fg=fg.neutral bg=bg.layer-basement
+19:42-42 fg=stroke.neutral-weak bg=bg.layer-default
+19:43-43 fg=fg.neutral bg=bg.layer-default
+19:44-50 fg=fg.warning bg=bg.layer-default
+19:51-57 fg=fg.neutral-subtle bg=bg.layer-default
+19:58-72 fg=fg.neutral bg=bg.layer-default
+19:73-73 fg=stroke.neutral-weak bg=bg.layer-default
+19:74-78 fg=fg.neutral bg=bg.layer-basement
+19:79-79 fg=stroke.neutral-weak bg=bg.layer-basement
+20:0-4 fg=fg.neutral bg=bg.layer-basement
+20:5-5 fg=stroke.neutral-weak bg=bg.layer-default
+20:6-35 fg=fg.neutral bg=bg.layer-default
+20:36-36 fg=stroke.neutral-weak bg=bg.layer-default
+20:37-41 fg=fg.neutral bg=bg.layer-basement
+20:42-42 fg=stroke.neutral-weak bg=bg.layer-default
+20:43-72 fg=fg.neutral bg=bg.layer-default
+20:73-73 fg=stroke.neutral-weak bg=bg.layer-default
+20:74-79 fg=fg.neutral bg=bg.layer-basement
+21:0-4 fg=fg.neutral bg=bg.layer-basement
+21:5-5 fg=stroke.neutral-weak bg=bg.layer-default
+21:6-35 fg=fg.neutral bg=bg.layer-default
+21:36-36 fg=stroke.neutral-weak bg=bg.layer-default
+21:37-41 fg=fg.neutral bg=bg.layer-basement
+21:42-42 fg=stroke.neutral-weak bg=bg.layer-default
+21:43-72 fg=fg.neutral bg=bg.layer-default
+21:73-73 fg=stroke.neutral-weak bg=bg.layer-default
+21:74-79 fg=fg.neutral bg=bg.layer-basement
+22:0-4 fg=fg.neutral bg=bg.layer-basement
+22:5-36 fg=stroke.neutral-weak bg=bg.layer-default
+22:37-41 fg=fg.neutral bg=bg.layer-basement
+22:42-73 fg=stroke.neutral-weak bg=bg.layer-default
+22:74-79 fg=fg.neutral bg=bg.layer-basement
 23:0-24 fg=fg.neutral bg=bg.layer-default
 23:25-29 fg=fg.neutral bg=bg.layer-basement bold
 23:30-36 fg=fg.neutral-subtle bg=bg.layer-default

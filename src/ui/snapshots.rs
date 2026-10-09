@@ -20,7 +20,15 @@ const OMP_FIXTURE: &str = "2026-01-01T00-00-00-000Z_00000000-0000-7000-0000-0000
 
 /// The omp fixture replayed to its end and settled. `None` outside a git
 /// checkout (the published crate ships no fixtures).
-pub(super) fn fixture_app() -> Option<App> {
+pub(crate) fn fixture_app() -> Option<App> {
+    let mut app = loaded_fixture()?;
+    app.go_live();
+    app.tick_timeline(std::time::Duration::ZERO);
+    Some(app)
+}
+
+/// The omp fixture loaded for replay, not yet played.
+fn loaded_fixture() -> Option<App> {
     let dir = crate::provider::harness::fixture_dir("omp")?;
     let session = crate::provider::open(&Target::Path(dir.join(OMP_FIXTURE)), None).unwrap();
     let (items, info, _) = crate::tailer::build_replay(&session);
@@ -32,8 +40,6 @@ pub(super) fn fixture_app() -> Option<App> {
         speed: 8.0,
         info,
     });
-    app.go_live();
-    app.tick_timeline(std::time::Duration::ZERO);
     Some(app)
 }
 
@@ -95,6 +101,39 @@ fn check(view: View, mode: ThemeMode, w: u16, h: u16) {
             actual.lines().nth(first).unwrap_or("")
         );
     }
+}
+
+/// A replay that plays to its end folds its done subagents there, and the
+/// Overview camera re-frames the folded graph as a fresh fit would.
+#[test]
+fn a_replay_ending_in_a_fold_refits_the_overview() {
+    let Some(mut app) = loaded_fixture() else {
+        return;
+    };
+    let theme = Theme::new(ThemeMode::Dark, Depth::TrueColor);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+    let mut frame = |app: &mut App| {
+        terminal.draw(|f| crate::ui::draw(f, app, &theme)).unwrap();
+    };
+    app.set_view(View::Graph);
+    // Play it frame by frame, the way the loop does, until it settles.
+    let mut before_end = app.flow.viewport;
+    for _ in 0..10_000 {
+        if app.settled() {
+            break;
+        }
+        frame(&mut app);
+        before_end = app.flow.viewport;
+        app.tick_timeline(std::time::Duration::from_secs(1));
+    }
+    assert!(app.settled(), "the replay reaches its end");
+    frame(&mut app);
+    let after_end = app.flow.viewport;
+    assert_ne!(after_end, before_end, "the fold re-frames the camera");
+
+    app.flow.request_fit_view();
+    frame(&mut app);
+    assert_eq!(after_end, app.flow.viewport, "as a fresh fit would");
 }
 
 macro_rules! snapshots {
