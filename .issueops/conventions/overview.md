@@ -85,7 +85,9 @@ Where the repo shows a provider-specific shape (Claude single inherited timestam
 ## UI and SEED tokens (observed; checked by issue #6 gates, not by CI)
 
 - Every color comes from `ui::seed::theme::Theme`, which resolves SEED rootage tokens. No `Color::` literal in `src/ui` outside `src/ui/seed`, and none in `src/state` (gate G3 in `.issueops/issues/6/gates.md`, run by `gate.py`, not by CI).
-- A new widget or view takes `&Theme`. View state (selection, view, overlays, hit map) is plain data in `src/state/view.rs`; `src/state` never imports `src/ui` outside tests.
+- A new widget or view takes `&Theme`. View state (selection, view, folds, overlays, hit map) is plain data in `src/state/view.rs`; `src/state` never imports `src/ui` outside tests.
+- Done-subagent folds have one owner, `state::view::fold_set`: the Now rows (`view::rows`), the graph sync, `j`/`k` and the fold selection all read its `FoldSet`, never their own rule, and the loop's `App::reconcile_folds` re-syncs the graph whenever the folds change (issue #9). The selection never decides what folds.
+- The top bar's playback words and glyphs (`◉ live`, `◦ quiet`, …) never reuse an agent status's (`● ◌ ✓ ✗ ■`, `active`/`idle`/`stopped`), so the two never read as a contradiction (issue #9).
 - `src/ui/seed/tokens.rs` is generated: never edit it by hand. Re-vendor with `scripts/sync-seed.sh <full-sha>`, update `design/seed/SOURCE.md`, then `UPDATE_SEED=1 cargo test --locked seed_tokens`; view goldens may then need `UPDATE_GOLDEN=1`.
 - Brand rule: SEED's brand role is drawn from the purple palette at the steps SEED uses carrot. No Daangn logo, name, character, or carrot accent; `design/seed/LICENSE` and `NOTICE` ship in release archives as `LICENSE-APACHE-SEED` / `NOTICE-SEED`. Decision: [SEED UI ADR](../adr/2026-10-09-the-terminal-ui-draws-only-from-pinned-seed-tokens-and-state.md).
 - UI copy is English, like the README and `inspect` output.
