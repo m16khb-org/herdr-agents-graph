@@ -10,3 +10,13 @@ The omp provider (src/provider/omp/) and its fixtures (assets/omp/) start from
 zoetrope pull request #26 by bl-dev0
 (https://github.com/furkankly/zoetrope/pull/26, commit 71e8345), adapted
 here for omp 18.8.4.
+
+The color, duration, timing-function, dimension, radius, and font-weight
+design tokens under design/seed/, and the file generated from them
+(src/ui/seed/tokens.rs), come from SEED Design
+(https://github.com/daangn/seed-design), Copyright 2025 주식회사 당근마켓
+(Daangn Market Inc.), licensed under the Apache License 2.0; the license text
+and the upstream NOTICE are kept in design/seed/. The generated file is
+modified from the originals: the brand role is remapped from carrot to purple
+and alpha colors are composited to opaque. SEED's brand resources (logo, name,
+characters) are not used.

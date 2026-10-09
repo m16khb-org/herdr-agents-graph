@@ -1,0 +1,34 @@
+kind: Tokens
+metadata:
+  id: duration
+  name: Duration
+  lastUpdated: 25-11-18
+data:
+  collection: global
+  tokens:
+    $duration.d1:
+      values:
+        default: 50ms
+    $duration.d2:
+      values:
+        default: 100ms
+    $duration.d3:
+      values:
+        default: 150ms
+    $duration.d4:
+      values:
+        default: 200ms
+    $duration.d5:
+      values:
+        default: 250ms
+    $duration.d6:
+      values:
+        default: 300ms
+    $duration.color-transition:
+      values:
+        default: $duration.d3
+    # TODO: consider renaming to match the scale feedback naming. Held back because the token is
+    # already released as --seed-duration-pressed-scale.
+    $duration.pressed-scale:
+      values:
+        default: $duration.d3
