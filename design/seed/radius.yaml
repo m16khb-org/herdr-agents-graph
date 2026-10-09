@@ -1,0 +1,40 @@
+kind: Tokens
+metadata:
+  id: radius
+  name: Radius
+data:
+  collection: global
+  tokens:
+    $radius.r0_5:
+      values:
+        default: 2px
+    $radius.r1:
+      values:
+        default: 4px
+    $radius.r1_5:
+      values:
+        default: 6px
+    $radius.r2:
+      values:
+        default: 8px
+    $radius.r2_5:
+      values:
+        default: 10px
+    $radius.r3:
+      values:
+        default: 12px
+    $radius.r3_5:
+      values:
+        default: 14px
+    $radius.r4:
+      values:
+        default: 16px
+    $radius.r5:
+      values:
+        default: 20px
+    $radius.r6:
+      values:
+        default: 24px
+    $radius.full:
+      values:
+        default: 9999px

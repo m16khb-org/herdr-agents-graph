@@ -3,7 +3,7 @@ name = "agents-graph"
 # The build step downloads the `agents-graph` release tagged `v<version>`, so
 # this moves in step with the crate version (the release workflow refuses a tag
 # that disagrees with either).
-version = "0.1.0"
+version = "0.2.0"
 description = "Watch the focused agent's session (Claude Code, Codex, omp) as a live flow graph."
 platforms = ["macos", "linux"]
 

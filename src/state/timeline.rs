@@ -35,8 +35,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::fact::{FactKind, Statement};
-use crate::state::session::MAIN_ID;
+use crate::fact::Statement;
 use crate::tailer::{ReplayItem, Timing};
 
 /// The replay/live timeline and its playhead.
@@ -121,10 +120,6 @@ pub struct Timeline {
 const GAP_FAITHFUL_KNEE: f64 = 0.8;
 /// Log-compression scale above the knee (seconds per e-fold of overage).
 const GAP_COMPRESS_SCALE: f64 = 0.6;
-
-/// A gap between consecutive events at least this long (seconds) is flagged on
-/// the scrubber as a fast-forward (dead-air-compressed) stretch.
-const GAP_MARKER_SECS: i64 = 60;
 
 /// Real seconds to spend crossing a gap whose *faithful* crossing time (gap ÷
 /// speed) is `faithful` seconds. Identity below the knee (play it straight),
@@ -452,16 +447,11 @@ impl Timeline {
         self.items.iter().find_map(|i| i.ts())
     }
 
-    /// Whether the stream has a non-trivial span to scrub (≥1 timestamped item).
-    pub fn has_span(&self) -> bool {
-        self.head.is_some()
-    }
-
     /// Number of items unavoidably folded at the very start — a same-timestamp
     /// clump (and dated session metadata) that the model can only apply
-    /// atomically. The bar is normalized over `[floor, len]` so this clump maps
-    /// to position 0; otherwise the playhead could never reach the left edge
-    /// (and a left-click would spring back as the next tick time-folds the clump).
+    /// atomically. Fraction seeks are normalized over `[floor, len]` so this
+    /// clump maps to fraction 0; otherwise the start could never be reached
+    /// (and the next tick would time-fold the clump anyway).
     pub fn floor(&self) -> usize {
         // Cheap: scans only the leading clump and breaks at the first event
         // after the start, so it's ~O(clump), not O(items) — no cache needed.
@@ -479,74 +469,15 @@ impl Timeline {
         n
     }
 
-    /// Scrubber position, `0.0..=1.0` — **by event, not by wall-clock time**, and
-    /// normalized over the reachable range `[floor, len]` so the playhead can sit
-    /// flush-left at the start clump and flush-right at the end.
-    pub fn progress(&self) -> f64 {
-        let floor = self.floor();
-        let reach = self.items.len().saturating_sub(floor);
-        if reach == 0 {
-            return if self.folded > 0 { 1.0 } else { 0.0 };
-        }
-        (self.folded.saturating_sub(floor) as f64 / reach as f64).clamp(0.0, 1.0)
-    }
-
-    /// The folded-item count at scrubber fraction `f` — inverse of
-    /// [`progress`](Self::progress), in `[floor, len]`, so a click lands the
-    /// playhead under the cursor exactly.
+    /// The folded-item count at fraction `f` (`0.0..=1.0`) of the reachable
+    /// range `[floor, len]` — by event, not by wall-clock time — which is
+    /// where [`App::seek_to_fraction`] lands the playhead.
+    ///
+    /// [`App::seek_to_fraction`]: crate::state::App::seek_to_fraction
     pub fn fold_at_fraction(&self, f: f64) -> usize {
         let floor = self.floor();
         let reach = self.items.len().saturating_sub(floor);
         floor + (f.clamp(0.0, 1.0) * reach as f64).round() as usize
-    }
-
-    /// Bar position (`0.0..=1.0`) of the event at item `idx` — for placing the
-    /// fast-forward markers. Items inside the start clump map to 0.
-    pub fn bar_fraction_for_index(&self, idx: usize) -> f64 {
-        let floor = self.floor();
-        let reach = self.items.len().saturating_sub(floor);
-        if reach == 0 {
-            return 0.0;
-        }
-        ((idx + 1).saturating_sub(floor) as f64 / reach as f64).clamp(0.0, 1.0)
-    }
-
-    /// Item indices that begin after a large real-time gap (≥ `GAP_MARKER_SECS`)
-    /// — where playback compresses dead air, i.e. "time goes fast here."
-    pub fn gap_markers(&self) -> Vec<usize> {
-        let mut out = Vec::new();
-        let mut prev: Option<DateTime<Utc>> = None;
-        for (i, item) in self.items.iter().enumerate() {
-            if let Some(ts) = item.ts() {
-                if let Some(p) = prev
-                    && (ts - p).num_seconds() >= GAP_MARKER_SECS
-                {
-                    out.push(i);
-                }
-                prev = Some(ts);
-            }
-        }
-        out
-    }
-
-    /// Item indices of main-thread human prompts — the prompt-era boundaries that
-    /// `[`/`]` step between (see [`App::seek_prompt`]). Surfaced on the scrubber
-    /// as chapter ticks so those jump targets are visible. Shares the era spine's
-    /// definition: a `Prompt` fact, which a provider states only for text a
-    /// person typed, so injected user text is never marked.
-    ///
-    /// [`App::seek_prompt`]: crate::state::App::seek_prompt
-    pub fn prompt_markers(&self) -> Vec<usize> {
-        self.items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, item)| {
-                item.any(|f| {
-                    matches!(f.kind, FactKind::Prompt(_)) && f.agent.as_deref() == Some(MAIN_ID)
-                })
-                .then_some(i)
-            })
-            .collect()
     }
 
     /// The newest timestamp at or before item index `idx` — the cursor value for
@@ -570,7 +501,7 @@ impl Timeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fact::Fact;
+    use crate::fact::{Fact, FactKind};
     use crate::provider::claude::wire;
     use crate::provider::claude::{Record, Source};
     use crate::tailer::ReplayItem;
@@ -676,80 +607,6 @@ mod tests {
             Some(old),
             "scrubbed back → the playhead"
         );
-    }
-
-    #[test]
-    fn gap_markers_flag_gaps_at_or_over_the_threshold() {
-        // GAP_MARKER_SECS = 60, and the check is `>=` — pin the boundary so an
-        // off-by-one there can't silently drop (or fabricate) a fast-forward mark.
-        let mut tl = Timeline::new();
-        tl.items = vec![
-            entry_item("2026-06-05T10:00:00.000Z"), // 0
-            entry_item("2026-06-05T10:00:59.000Z"), // +59s → no marker
-            entry_item("2026-06-05T10:01:59.000Z"), // +60s → marker at idx 2
-            entry_item("2026-06-05T10:03:00.000Z"), // +61s → marker at idx 3
-        ];
-        assert_eq!(
-            tl.gap_markers(),
-            vec![2, 3],
-            "a 60s gap flags; a 59s gap does not"
-        );
-    }
-
-    #[test]
-    fn prompt_markers_index_human_prompts_only() {
-        // Chapter ticks mark human prompts only: entry_item carries origin.kind
-        // "human" (a real prompt); a task-notification-origin line is system-
-        // injected (excluded); a non-User item is skipped. Values are ITEM
-        // indices, not columns.
-        let system = {
-            let line = r#"{"type":"user","uuid":"u","parentUuid":null,"origin":{"kind":"task-notification"},"timestamp":"2026-06-05T10:30:00.000Z","message":{"role":"user","content":"3 background agents were stopped"}}"#;
-            ReplayItem::new(
-                Record::Entry {
-                    source: Source::Main,
-                    entry: wire::parse_line(line).unwrap(),
-                }
-                .statement()
-                .unwrap(),
-            )
-        };
-        let mut tl = Timeline::new();
-        tl.items = vec![
-            entry_item("2026-06-05T10:00:00.000Z"), // 0: human prompt
-            system,                                 // 1: system-injected → excluded
-            meta_item(),                            // 2: not a User prompt
-            entry_item("2026-06-05T11:00:00.000Z"), // 3: human prompt
-        ];
-        assert_eq!(tl.prompt_markers(), vec![0, 3]);
-    }
-
-    #[test]
-    fn bar_fraction_for_index_spans_zero_to_one_and_clamps() {
-        // Empty → 0.0, not a divide-by-zero.
-        let tl = Timeline::new();
-        assert_eq!(tl.bar_fraction_for_index(0), 0.0);
-
-        let mut tl = Timeline::new();
-        tl.load_replay(
-            vec![
-                entry_item("2026-06-05T10:00:00.000Z"),
-                entry_item("2026-06-05T10:00:10.000Z"),
-                entry_item("2026-06-05T10:00:20.000Z"),
-            ],
-            8.0,
-        );
-        // The last item sits at the right end; past-the-end clamps, never panics.
-        let last = tl.items.len() - 1;
-        assert_eq!(
-            tl.bar_fraction_for_index(last),
-            1.0,
-            "last item → far right"
-        );
-        assert_eq!(tl.bar_fraction_for_index(999), 1.0, "beyond the end clamps");
-        // Monotonic non-decreasing and within [0, 1].
-        let f0 = tl.bar_fraction_for_index(0);
-        assert!((0.0..=1.0).contains(&f0));
-        assert!(tl.bar_fraction_for_index(1) >= f0);
     }
 
     #[test]
@@ -1044,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_is_event_based_and_inverts_fold_at_fraction() {
+    fn fold_at_fraction_spans_the_reachable_range() {
         let mut tl = Timeline::new();
         // Distinct timestamps → floor is 1 (only the first event due at the
         // start), reachable range [1, 4].
@@ -1058,12 +915,6 @@ mod tests {
             8.0,
         );
         assert_eq!(tl.floor(), 1);
-
-        // The floor folds map to position 0; the end maps to 1.
-        tl.folded = 1;
-        assert!((tl.progress() - 0.0).abs() < 1e-9);
-        tl.folded = 4;
-        assert!((tl.progress() - 1.0).abs() < 1e-9);
 
         // fold_at_fraction is the inverse, over [floor, len].
         assert_eq!(tl.fold_at_fraction(0.0), 1);
@@ -1090,8 +941,6 @@ mod tests {
         // The leftmost click folds exactly the floor and sits at position 0.
         let target = tl.fold_at_fraction(0.0);
         assert_eq!(target, 3);
-        tl.folded = target;
-        assert!((tl.progress() - 0.0).abs() < 1e-9, "left edge must reach 0");
     }
 
     #[test]

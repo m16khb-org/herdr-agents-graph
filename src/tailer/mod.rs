@@ -54,6 +54,10 @@ mod live;
 #[cfg(feature = "native")]
 mod replay;
 
+// The ui's snapshot tests load a fixture the way a replay does.
+#[cfg(all(test, feature = "native"))]
+pub(crate) use replay::build_replay;
+
 #[cfg(feature = "native")]
 use live::run_live;
 #[cfg(feature = "native")]

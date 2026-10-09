@@ -79,15 +79,22 @@ jobs:
           fi
 
       # The binary sits at the archive root, which is where the installer
-      # looks for it.
+      # looks for it. The SEED Design tokens compiled into it are Apache-2.0:
+      # their license and NOTICE travel with every archive, renamed so they
+      # do not collide with this crate's own LICENSE and NOTICE (tar -C cannot
+      # rename, so the copies are staged and removed after packing).
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          mkdir dist
+          mkdir dist stage
+          cp design/seed/LICENSE stage/LICENSE-APACHE-SEED
+          cp design/seed/NOTICE stage/NOTICE-SEED
           tar czf "dist/agents-graph-${{ matrix.target }}.tar.gz" \
             -C "target/${{ matrix.target }}/release" agents-graph \
-            -C "$GITHUB_WORKSPACE" LICENSE NOTICE
+            -C "$GITHUB_WORKSPACE" LICENSE NOTICE \
+            -C "$GITHUB_WORKSPACE/stage" LICENSE-APACHE-SEED NOTICE-SEED
+          rm -r stage
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -95,8 +102,10 @@ jobs:
         run: |
           mkdir dist
           cp "target/${{ matrix.target }}/release/agents-graph.exe" LICENSE NOTICE dist/
-          (cd dist && 7z a "agents-graph-${{ matrix.target }}.zip" agents-graph.exe LICENSE NOTICE)
-          rm dist/agents-graph.exe dist/LICENSE dist/NOTICE
+          cp design/seed/LICENSE dist/LICENSE-APACHE-SEED
+          cp design/seed/NOTICE dist/NOTICE-SEED
+          (cd dist && 7z a "agents-graph-${{ matrix.target }}.zip" agents-graph.exe LICENSE NOTICE LICENSE-APACHE-SEED NOTICE-SEED)
+          rm dist/agents-graph.exe dist/LICENSE dist/NOTICE dist/LICENSE-APACHE-SEED dist/NOTICE-SEED
 
       - uses: actions/upload-artifact@v4
         with:
