@@ -7,7 +7,7 @@ description: Family module overview: installation and runtime operation.
 
 Canonical index: [OPERATIONS.md](../../OPERATIONS.md)
 
-Source of truth for the plugin: [docs/HERDR-PLUGIN.md](../../../docs/HERDR-PLUGIN.md). Note: `src/ui` is being redesigned in [issue #6](https://github.com/m16khb-org/herdr-agents-graph/issues/6); this doc describes `main` at `1c744d2`.
+Source of truth for the plugin: [docs/HERDR-PLUGIN.md](../../../docs/HERDR-PLUGIN.md). Screen, keys, and colours: `README.md`. This doc describes `main` after PR #8 (v0.2.0, SEED UI).
 
 ## Local build and run
 
@@ -41,8 +41,13 @@ Release build: `cargo build --release --locked` (what cd.yml runs). `scripts/idl
 | `HERDR_PLUGIN_ROOT` | open.sh, pane.sh | plugin checkout path |
 | `HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME` | keys.sh | herdr config location (then `~/.config/herdr/config.toml`) |
 | `AG_RELEASE_BASE` | install.sh | release asset directory URL (any curl URL, `file://` ok) |
+| `AG_THEME` | `src/ui/seed/theme.rs` | `light` or `dark`: pick the token set and skip the terminal background query |
+| `AG_COLOR` | `src/ui/seed/theme.rs` | `256`, or `truecolor`/`24bit`; otherwise `COLORTERM` decides, else 256 colours |
+| `AG_BG` | `src/ui/seed/theme.rs` | `none` keeps the terminal's own background (transparent terminals) |
+| `COLORTERM`, `COLORFGBG` | `src/ui/seed/theme.rs` | colour depth hint; light/dark fallback when the terminal does not answer OSC 11 |
 | `AG_BIN` | scripts/idle-cpu.sh | binary override |
-| `UPDATE_GOLDEN` | `src/provider/harness.rs` | tests: rewrite golden `assets/**/*.model.txt` / `.timeline.txt` |
+| `UPDATE_GOLDEN` | `src/provider/harness.rs`, `src/ui/snapshots.rs` | tests: rewrite provider goldens `assets/<provider>/*.model.txt` / `.timeline.txt` and view goldens `assets/ui/*.txt` |
+| `UPDATE_SEED` | `src/ui/seed/gen.rs` | tests: rewrite `src/ui/seed/tokens.rs` from `design/seed/*.yaml` |
 | `AG_REAL_SESSIONS`, `AG_REAL_SESSIONS_ROOT` | `tests/real_sessions.rs` | opt-in test over real local sessions |
 
 Never record values of these in docs or logs; names and purposes only.
@@ -62,7 +67,7 @@ herdr plugin install m16khb-org/herdr-agents-graph/herdr-plugin
 
 1. Make `version` equal in `Cargo.toml` and `herdr-plugin/herdr-plugin.toml`.
 2. Push a tag `v<version>`. `.github/workflows/cd.yml` (trigger: tags `v*`) first checks the tag against both manifests and fails on disagreement.
-3. `build` job matrix (`cargo build --release --locked`; `cross` for musl): `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`. Unix archives are `.tar.gz`, Windows `.zip`, each with LICENSE and NOTICE.
+3. `build` job matrix (`cargo build --release --locked`; `cross` for musl): `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`. Unix archives are `.tar.gz`, Windows `.zip`, each with `LICENSE`, `NOTICE`, and SEED's Apache-2.0 `LICENSE-APACHE-SEED` / `NOTICE-SEED` (from `design/seed/`; `install.sh` extracts only the binary).
 4. `release` job writes `SHA256SUMS` over `agents-graph-*` and runs `gh release create` with generated notes.
 
 Note: the plugin installer has no Windows target. CI (`ci.yml`) gates: fmt, clippy `-D warnings`, tests on ubuntu/macos/windows, portable-core check (`--no-default-features`), docs, `cargo publish --dry-run`, MSRV, typos, commit lint.

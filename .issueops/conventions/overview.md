@@ -26,7 +26,7 @@ Legend: **Enforced** = a CI job or config fails on it. **Observed** = visible in
 | Commits | `crate-ci/committed@v1.1.11` | See [COMMIT_POLICY.md](../COMMIT_POLICY.md). |
 
 - Edition 2024 (`Cargo.toml`). No `rust-toolchain` file: CI uses `dtolnay/rust-toolchain@stable`, except the MSRV job.
-- Lint relaxations in source are local and rare: `#[allow(clippy::too_many_arguments)]` (`src/ui/panel.rs:283`) and `#[allow(deprecated)]` (`src/provider/claude/discovery.rs:29`). No crate-level `#![deny/forbid/warn]` attributes were found.
+- Lint relaxations in source are local and rare: `#[allow(clippy::too_many_arguments)]` on three render helpers (`src/ui/views/detail.rs:314`, `src/ui/views/lanes.rs:386,535`) and `#[allow(deprecated)]` (`src/provider/claude/discovery.rs:29`). No crate-level `#![deny/forbid/warn]` attributes were found.
 - The test job asserts nothing about clippy on its own; a prior fix `style(test): satisfy clippy needless_borrows_for_generic_args` (`febfd7f`) shows test code is held to the same `-D warnings` bar via `--all-targets`.
 - `typos.toml` ignores: ellipsis-truncated string fragments (`"hel…"`), `mis-` prefixes, and `assets/codex/**/*.jsonl` (real captures). Allowed words: `ratatui`, `seeked`, `reviewr`. Add a word there with a comment saying why, as the existing entries do.
 
@@ -78,13 +78,20 @@ Where the repo shows a provider-specific shape (Claude single inherited timestam
 
 ## Tests (observed)
 
-- Unit tests are inline `#[cfg(test)] mod tests` (38 `cfg(test)` sites under `src/`); integration test: `tests/real_sessions.rs` (parses local real session files without panicking; see `60b58e4`). Benches: `benches/` (`timeline`, `memory`, criterion, `harness = false`).
+- Unit tests are inline `#[cfg(test)] mod tests` (63 `cfg(test)` sites under `src/`, plus 3 `cfg(all(test, …))`); integration test: `tests/real_sessions.rs` (parses local real session files without panicking; see `60b58e4`). Benches: `benches/` (`timeline`, `memory`, criterion, `harness = false`).
 - Tests must pass on Windows: build expected paths with `Path::join`/`display()` instead of hard-coded `/` (`d58ae7b`).
 - A fix adds a regression test named for the behavior (e.g. `a_complete_line_longer_than_the_cap_is_kept`, `16081ca`). Details: [TESTING.md](../TESTING.md).
 
+## UI and SEED tokens (observed; checked by issue #6 gates, not by CI)
+
+- Every color comes from `ui::seed::theme::Theme`, which resolves SEED rootage tokens. No `Color::` literal in `src/ui` outside `src/ui/seed`, and none in `src/state` (gate G3 in `.issueops/issues/6/gates.md`, run by `gate.py`, not by CI).
+- A new widget or view takes `&Theme`. View state (selection, view, overlays, hit map) is plain data in `src/state/view.rs`; `src/state` never imports `src/ui` outside tests.
+- `src/ui/seed/tokens.rs` is generated: never edit it by hand. Re-vendor with `scripts/sync-seed.sh <full-sha>`, update `design/seed/SOURCE.md`, then `UPDATE_SEED=1 cargo test --locked seed_tokens`; view goldens may then need `UPDATE_GOLDEN=1`.
+- Brand rule: SEED's brand role is drawn from the purple palette at the steps SEED uses carrot. No Daangn logo, name, character, or carrot accent; `design/seed/LICENSE` and `NOTICE` ship in release archives as `LICENSE-APACHE-SEED` / `NOTICE-SEED`. Decision: [SEED UI ADR](../adr/2026-10-09-the-terminal-ui-draws-only-from-pinned-seed-tokens-and-state.md).
+- UI copy is English, like the README and `inspect` output.
+
 ## Other
 
-- `src/ui` is being replaced by a SEED design-token layer in [issue #6](https://github.com/m16khb-org/herdr-agents-graph/issues/6); describe and edit it with that in mind.
 - `docs/DESIGN.md` is zoetrope-origin and may use `zoe`/`zoetrope` names; prefer `docs/ARCHITECTURE.md` when they disagree.
 - Upstream attribution (MIT, `LICENSE`, `NOTICE`) stays as-is (`195dbb8` constraint).
 - Repo-root `AGENTS.md` carries general behavioral guidelines (simplicity, surgical changes, goal-driven verification); they apply here.

@@ -22,7 +22,7 @@ description: Agent start, execution, verification, and completion flow; read whe
 
 ## How work has run in this repo
 
-Feature work goes through IssueOps cycles (issue #1 → PR #2; issue #6 in progress). Observed shape, from `.issueops/issues/1/` and the issue/PR history:
+Feature work goes through IssueOps cycles (issue #1 → PR #2 → v0.1.0; issue #6 → PR #8 → v0.2.0). Observed shape, from `.issueops/issues/{1,6}/` and the issue/PR history:
 
 - One GitHub issue per cycle, branch `<issue>-<slug>` from `main`, and a canonical worktree at `../herdr-agents-graph.worktrees/<branch>`. The source checkout stays clean while a cycle runs; edits happen only in the worktree.
 - Plans pass an independent adversarial review before implementation; plan, gates, and report live under `.issueops/issues/<n>/`.

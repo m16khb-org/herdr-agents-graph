@@ -24,7 +24,9 @@ Features: `default = ["native"]`; `native` enables tokio, crossterm, futures, an
 | web-time | 1 | 1.1.0 | portable time | High |
 | unicode-width | 0.2 | 0.2.2 | text width | High |
 | imbl | 7.0.1 | 7.0.1 | persistent data structures | High |
+| terminal-colorsaurus | 1.0 (optional, `native`) | 1.0.3 | terminal background query (OSC 11) for light/dark theme | High |
 | criterion | 0.8.2 | 0.8.2 | benchmarks | High (dev-dependency, html_reports) |
+| yaml-rust2 | 0.13 | 0.13.0 | parses vendored SEED YAML in the token generator test | High (dev-dependency) |
 
 Roles are brief inferences from crate purpose and manifest comments; dependency table lives in [Cargo.toml](../Cargo.toml).
 
@@ -38,7 +40,7 @@ Roles are brief inferences from crate purpose and manifest comments; dependency 
 - Changelog: `cliff.toml` (git-cliff; conventional commits only, per ci.yml comment).
 - herdr plugin manifest `herdr-plugin/herdr-plugin.toml`, min herdr 0.9.3.
 - Origin: fork of furkankly/zoetrope (MIT); see [NOTICE](../NOTICE), [docs/DESIGN.md](../docs/DESIGN.md), [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
-- `src/ui` is being redesigned in [issue #6](https://github.com/m16khb-org/herdr-agents-graph/issues/6).
+- Design tokens: SEED Design rootage (daangn/seed-design@22b68ce0, `@seed-design/rootage-artifacts` 3.0.2, Apache-2.0) vendored in `design/seed/` and compiled into `src/ui/seed/tokens.rs`; no YAML at runtime. See [conventions/overview.md](conventions/overview.md) "UI and SEED tokens".
 
 ## Adding a dependency
 

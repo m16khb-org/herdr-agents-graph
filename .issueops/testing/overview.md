@@ -92,8 +92,11 @@ Both in `Cargo.toml` as `harness = false`, over synthetic sessions from `benches
 
 ## TestBackend and UI tests
 
-- `src/state/frame.rs` tests drive `RedrawGate` (draw-skip logic) with a simulated clock (`Instant` offsets and `TICK`), not sleeps. `draw_every_tick_while_auto_panning` renders once via `ratatui::Terminal::new(TestBackend::new(80, 24))` + `crate::ui::draw`, then feeds mouse events through `crate::handler::handle_event`.
-- `src/ui` is being redesigned in [issue #6](https://github.com/m16khb-org/herdr-agents-graph/issues/6); UI tests that assert on rendered cells may change with it.
+- `src/state/frame.rs` tests drive `RedrawGate` (draw-skip logic) with a simulated clock (`Instant` offsets and `TICK`), not sleeps. `draw_every_tick_while_auto_panning` renders once via `ratatui::Terminal::new(TestBackend::new(80, 24))` + `crate::ui::draw(f, &mut app, &theme)` with a fixed dark truecolor `Theme`, then feeds mouse events through `crate::handler::handle_event`.
+- **View goldens** (`src/ui/snapshots.rs`, native only): the omp fixture replayed to its end, rendered for each view (Now, Lanes, Graph) × theme (light, dark) × size (80x24, 120x40), 12 files `assets/ui/<view>-<theme>-<WxH>.txt`. Each holds the frame's text and its style runs named by SEED token (`seed::snapshot`), not RGB, so a token value change does not churn them. Clock times print in UTC. Regenerate with `UPDATE_GOLDEN=1` and review the diff like the provider goldens.
+- **Token generator** (`src/ui/seed/gen.rs`, `seed_tokens_match_vendored_yaml`): regenerates `tokens.rs` from `design/seed/*.yaml` and fails on drift; `UPDATE_SEED=1` rewrites it. Outside a git checkout (no `design/seed/color.yaml`, as in the published crate) it prints `skipping:` and passes. It also pins the brand swap (`brand_maps_to_purple_not_carrot`).
+- Theme selection is tested without a terminal: `decide()` takes the environment snapshot and the OSC 11 query as a closure (`decide_prefers_ag_theme_without_querying`, `decide_uses_query_then_colorfgbg_then_dark` in `src/ui/seed/theme.rs`).
+- Idle CPU after the redesign (issue #6 gate G10, one machine): finished demo 0.30 %, Running copy 0.17 %, pending-tool copy 0.13 % (`scripts/make-running-demo.sh --pending-tool` makes the last one).
 
 ## Platform pitfalls observed
 
