@@ -107,7 +107,7 @@ jobs:
           (cd dist && 7z a "agents-graph-${{ matrix.target }}.zip" agents-graph.exe LICENSE NOTICE LICENSE-APACHE-SEED NOTICE-SEED)
           rm dist/agents-graph.exe dist/LICENSE dist/NOTICE dist/LICENSE-APACHE-SEED dist/NOTICE-SEED
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: agents-graph-${{ matrix.target }}
           path: dist/*
