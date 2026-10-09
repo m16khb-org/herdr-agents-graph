@@ -6,12 +6,45 @@
 //! (node/edge added) marks layout dirty; at sync end we run Sugiyama. Selection
 //! survives because node ids are stable and we never clear-and-re-add.
 
-use rataflow::{Edge, Flow, Handle, HandlePosition, Node, Reconnectable, Sugiyama, Theme};
-use ratatui::style::Color;
+use rataflow::{Edge, Flow, Handle, HandlePosition, Node, Reconnectable, StepEdge, Sugiyama};
 
 use super::session::{AgentInfo, AgentKind, AgentStatus, SessionModel};
-use crate::ui::edges::AgentEdge;
-use crate::ui::nodes::{AgentNode, MAIN_NODE_DIMS, SUB_NODE_DIMS};
+
+/// Fixed card dimensions for main / workflow nodes (world units).
+pub const MAIN_NODE_DIMS: (f64, f64) = (30.0, 7.0);
+/// Fixed card dimensions for subagent nodes (world units).
+pub const SUB_NODE_DIMS: (f64, f64) = (26.0, 6.0);
+
+/// What an agent card shows, mirrored from the model on every sync.
+///
+/// Plain data: the graph layer reads the fields back and mutates them in
+/// place, and the ui layer renders it (`NodeContent` is implemented in
+/// `ui::views::graph`), so this module never depends on how a card looks.
+#[derive(Debug, Clone)]
+pub struct AgentNode {
+    /// Title line — the agent type, which for the main agent is the provider's
+    /// own name (`claude`, `codex`).
+    pub title: String,
+    /// Truncated description shown under the title.
+    pub description: Option<String>,
+    pub status: AgentStatus,
+    /// Number of tool calls.
+    pub tool_count: usize,
+    /// Name of the most recent tool call, if any.
+    pub last_tool: Option<String>,
+    pub output_tokens: u64,
+    /// Interactive agents (main, forks) word `Running` as "active": we know
+    /// there are recent entries, not that a task is executing.
+    pub interactive: bool,
+}
+
+/// A step-routed parent edge; `running` mirrors the target agent's status so
+/// the renderer can mark liveness on the structure itself.
+#[derive(Debug, Default, Clone)]
+pub struct AgentEdge {
+    pub(crate) inner: StepEdge,
+    pub running: bool,
+}
 
 /// The concrete `Flow` type the app uses: agent-card nodes, step-routed parent
 /// edges (no labels — liveness reads from color alone).
@@ -22,15 +55,10 @@ pub type AgentFlow = Flow<AgentNode, AgentEdge>;
 /// Config: `with_deselect_on_pane_click(false)`, `deselect_on_drag = false`
 /// (detail panel persists), `with_min_zoom(0.1)` (Sugiyama trees outgrow the
 /// default fit-view limit). Hidden source/target handles for a clean look.
+/// The palette is the ui's: it replaces `flow.theme` with the SEED palette
+/// before every canvas render.
 pub fn new_flow() -> AgentFlow {
-    // Identity palette: stock dark base, but `accent` becomes GOLD —
-    // selection highlights, done medals, the REPLAY badge. Green stays
-    // exclusively "alive" (status), red "failed". Every surface resolves from
-    // flow.theme, so this one assignment brands the whole app.
-    let mut palette = Theme::Dark.palette();
-    palette.accent = Color::Indexed(178);
     let mut flow = Flow::new()
-        .with_theme(Theme::Custom(palette))
         .with_deselect_on_pane_click(false)
         // We drive the camera on selection ourselves (a center-glide via
         // `pending_center`), so suppress the library's instant ensure-visible pan
@@ -39,15 +67,6 @@ pub fn new_flow() -> AgentFlow {
         .with_min_zoom(0.1);
     flow.deselect_on_drag = false;
     flow
-}
-
-/// Title line for a node: the agent type the provider recorded, else the
-/// generic label for its kind. No provider name appears here; the root
-/// agent's is stated by its provider like any other agent's.
-fn node_title(info: &AgentInfo) -> String {
-    info.agent_type
-        .clone()
-        .unwrap_or_else(|| info.kind.default_label().to_string())
 }
 
 /// Fixed card dimensions for a node kind.
@@ -62,12 +81,7 @@ fn node_dims(kind: AgentKind) -> (f64, f64) {
 /// comparison so unchanged agents skip [`build_content`]'s String clones on
 /// every sync (the steady state for almost all agents on almost all ticks).
 fn content_matches(info: &AgentInfo, node: &AgentNode) -> bool {
-    let title_ok = node.title
-        == info
-            .agent_type
-            .as_deref()
-            .unwrap_or(info.kind.default_label());
-    title_ok
+    node.title == info.display_name()
         && node.description.as_deref() == info.description.as_deref()
         && node.status == info.status
         && node.tool_count == info.tool_calls.len()
@@ -79,7 +93,7 @@ fn content_matches(info: &AgentInfo, node: &AgentNode) -> bool {
 /// Build the [`AgentNode`] content mirrored from an [`AgentInfo`].
 fn build_content(info: &AgentInfo) -> AgentNode {
     AgentNode {
-        title: node_title(info),
+        title: info.display_name().to_string(),
         description: info.description.clone(),
         status: info.status,
         tool_count: info.tool_calls.len(),

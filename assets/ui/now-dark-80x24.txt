@@ -1,0 +1,105 @@
+ omp · Demo fixture: rev…   ■ idle  5m02s  77 tok  $0.01    Now   Lanes   Graph
+  ▶ ● omp  Both subagents are done, thanks.               active 5m02s  54 tok
+      ✓ reviewer  The diff looks correct.                   done 3m58s  14 tok
+      ■ scout  search for review helpers                  stopped 1m57s  5 tok
+      ✓ subagent  Reminder: two tasks are still open.           done 0s  4 tok
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                   j/k  move  enter  expand  tab  view  ?  help
+---
+0:0-3 fg=fg.neutral bg=bg.layer-default bold
+0:4-6 fg=fg.neutral-subtle bg=bg.layer-default
+0:7-24 fg=fg.neutral-muted bg=bg.layer-default
+0:25-26 fg=fg.neutral bg=bg.layer-default
+0:27-34 fg=fg.neutral-muted bg=bg.layer-default-pressed
+0:35-35 fg=fg.neutral bg=bg.layer-default
+0:36-40 fg=fg.neutral-muted bg=bg.layer-default
+0:41-55 fg=fg.neutral-subtle bg=bg.layer-default
+0:56-58 fg=fg.neutral bg=bg.layer-default
+0:59-63 fg=fg.brand bg=bg.layer-default bold underlined
+0:64-64 fg=fg.neutral bg=bg.layer-default
+0:65-71 fg=fg.neutral-subtle bg=bg.layer-default
+0:72-72 fg=fg.neutral bg=bg.layer-default
+0:73-79 fg=fg.neutral-subtle bg=bg.layer-default
+1:0-1 fg=fg.neutral bg=bg.layer-basement
+1:2-3 fg=fg.brand bg=bg.layer-default-pressed
+1:4-4 fg=fg.informative bg=bg.layer-default-pressed
+1:5-5 fg=fg.neutral bg=bg.layer-default-pressed
+1:6-8 fg=fg.neutral bg=bg.layer-default-pressed bold
+1:9-10 fg=fg.neutral bg=bg.layer-default-pressed
+1:11-42 fg=fg.neutral-muted bg=bg.layer-default-pressed
+1:43-57 fg=fg.neutral bg=bg.layer-default-pressed
+1:58-63 fg=fg.informative bg=bg.layer-default-pressed
+1:64-77 fg=fg.neutral-muted bg=bg.layer-default-pressed
+1:78-79 fg=fg.neutral bg=bg.layer-basement
+2:0-5 fg=fg.neutral bg=bg.layer-basement
+2:6-6 fg=fg.positive bg=bg.layer-basement
+2:7-17 fg=fg.neutral bg=bg.layer-basement
+2:18-40 fg=fg.neutral-muted bg=bg.layer-basement
+2:41-59 fg=fg.neutral bg=bg.layer-basement
+2:60-63 fg=fg.positive bg=bg.layer-basement
+2:64-77 fg=fg.neutral-muted bg=bg.layer-basement
+2:78-79 fg=fg.neutral bg=bg.layer-basement
+3:0-5 fg=fg.neutral bg=bg.layer-basement
+3:6-6 fg=fg.warning bg=bg.layer-basement
+3:7-14 fg=fg.neutral bg=bg.layer-basement
+3:15-39 fg=fg.neutral-muted bg=bg.layer-basement
+3:40-57 fg=fg.neutral bg=bg.layer-basement
+3:58-64 fg=fg.warning bg=bg.layer-basement
+3:65-77 fg=fg.neutral-muted bg=bg.layer-basement
+3:78-79 fg=fg.neutral bg=bg.layer-basement
+4:0-5 fg=fg.neutral bg=bg.layer-basement
+4:6-6 fg=fg.positive bg=bg.layer-basement
+4:7-17 fg=fg.neutral bg=bg.layer-basement
+4:18-52 fg=fg.neutral-muted bg=bg.layer-basement
+4:53-63 fg=fg.neutral bg=bg.layer-basement
+4:64-67 fg=fg.positive bg=bg.layer-basement
+4:68-77 fg=fg.neutral-muted bg=bg.layer-basement
+4:78-79 fg=fg.neutral bg=bg.layer-basement
+5:0-79 fg=fg.neutral bg=bg.layer-basement
+6:0-79 fg=fg.neutral bg=bg.layer-basement
+7:0-79 fg=fg.neutral bg=bg.layer-basement
+8:0-79 fg=fg.neutral bg=bg.layer-basement
+9:0-79 fg=fg.neutral bg=bg.layer-basement
+10:0-79 fg=fg.neutral bg=bg.layer-basement
+11:0-79 fg=fg.neutral bg=bg.layer-basement
+12:0-79 fg=fg.neutral bg=bg.layer-basement
+13:0-79 fg=fg.neutral bg=bg.layer-basement
+14:0-79 fg=fg.neutral bg=bg.layer-basement
+15:0-79 fg=fg.neutral bg=bg.layer-basement
+16:0-79 fg=fg.neutral bg=bg.layer-basement
+17:0-79 fg=fg.neutral bg=bg.layer-basement
+18:0-79 fg=fg.neutral bg=bg.layer-basement
+19:0-79 fg=fg.neutral bg=bg.layer-basement
+20:0-79 fg=fg.neutral bg=bg.layer-basement
+21:0-79 fg=fg.neutral bg=bg.layer-basement
+22:0-79 fg=fg.neutral bg=bg.layer-basement
+23:0-33 fg=fg.neutral bg=bg.layer-default
+23:34-38 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:39-43 fg=fg.neutral-subtle bg=bg.layer-default
+23:44-44 fg=fg.neutral bg=bg.layer-default
+23:45-51 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:52-58 fg=fg.neutral-subtle bg=bg.layer-default
+23:59-59 fg=fg.neutral bg=bg.layer-default
+23:60-64 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:65-69 fg=fg.neutral-subtle bg=bg.layer-default
+23:70-70 fg=fg.neutral bg=bg.layer-default
+23:71-73 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:74-78 fg=fg.neutral-subtle bg=bg.layer-default
+23:79-79 fg=fg.neutral bg=bg.layer-default

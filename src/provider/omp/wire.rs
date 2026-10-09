@@ -179,14 +179,29 @@ pub struct AssistantMessage {
     pub response_id: Option<String>,
 }
 
-/// Turn usage. `output` is the delta this turn added; `totalTokens` and
-/// `cost` are measured but not read — `totalTokens` is cumulative like
-/// Claude's usage fields, and summing it would inflate the count the same
-/// way summing Claude's would.
+/// Turn usage. `output` is the delta this turn added; `totalTokens` is
+/// measured but not read — it is cumulative like Claude's usage fields, and
+/// summing it would inflate the count the same way. `cost` is kept as a plain
+/// [`Value`] so a shape surprise never fails the whole line; read it through
+/// [`Usage::cost_usd`].
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Usage {
     #[serde(default)]
     pub output: Option<u64>,
+    #[serde(default)]
+    pub cost: Value,
+}
+
+impl Usage {
+    /// Cost in USD: `cost.total` when `cost` is an object, `cost` itself when a
+    /// plain number, otherwise `None`.
+    pub fn cost_usd(&self) -> Option<f64> {
+        match &self.cost {
+            Value::Number(n) => n.as_f64(),
+            Value::Object(o) => o.get("total").and_then(Value::as_f64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

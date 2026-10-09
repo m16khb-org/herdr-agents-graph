@@ -75,8 +75,14 @@ pub enum FactKind {
     Model(String),
     /// Output tokens. `dedup` is the key under which the format repeats one
     /// turn's usage across several records (Claude's `requestId`); `None` sums
-    /// every fact as its own delta.
-    Tokens { output: u64, dedup: Option<String> },
+    /// every fact as its own delta. `cost_usd` is the cost the format itself
+    /// reports for this usage (omp); it follows the same `dedup` rule as
+    /// `output`, and is `None` when the format states none.
+    Tokens {
+        output: u64,
+        dedup: Option<String>,
+        cost_usd: Option<f64>,
+    },
     /// A human prompt on this agent's thread. An era boundary. Providers emit it
     /// only for text a person typed; injected text is not a prompt.
     Prompt(String),
@@ -86,10 +92,13 @@ pub enum FactKind {
     /// A tool call began. `summary` is the provider's one-line rendering of the
     /// input (a command, a path), because what makes a good summary is a
     /// property of the tool vocabulary, which only the provider knows.
+    /// `intent` is the agent's own stated reason for the call, when the format
+    /// carries one (omp `intent`, a spawn's description or task name).
     ToolStart {
         call: CallId,
         name: String,
         summary: Option<String>,
+        intent: Option<String>,
     },
     /// A tool call ended with an observed outcome. Emitted only from a record
     /// that carries the outcome; never synthesised from silence.

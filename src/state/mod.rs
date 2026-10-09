@@ -1,8 +1,8 @@
 //! Application state.
 //!
-//! [`App`] owns the rataflow `Flow` (the rendered graph), the pure
-//! [`SessionModel`] (domain truth), and all UI state (pause, mode, scroll, the
-//! current session id, the follow camera, and the chip tray).
+//! [`App`] owns the rataflow `Flow` (the graph view's canvas), the pure
+//! [`SessionModel`] (domain truth), and all view state (pause, mode, the
+//! current session id, the camera, the active view and the shared selection).
 //! [`App::handle_ui_event`] folds tailer events into the model and re-syncs the
 //! graph; events for stale sessions are dropped via [`App::is_current`].
 
@@ -14,14 +14,16 @@ pub mod info;
 pub mod render;
 pub mod session;
 pub(crate) mod timeline;
+pub mod view;
 
 // `App`'s public fields, nameable from outside without exposing the module
 // layout they live in.
 pub use self::frame::{FrameStamp, RedrawGate};
 pub use self::graph::AgentFlow;
 pub use self::info::SessionInfo;
+pub use self::session::SLOW_TOOL;
 pub use self::timeline::Timeline;
-pub use crate::ui::chips::ChipTray;
+pub use self::view::{Flash, HitMap, LaneAxis, Selection, Snack, View};
 
 use self::session::SessionModel;
 use crate::tailer::UiEvent;
@@ -79,8 +81,15 @@ pub enum Transport {
 /// How recently an append must have arrived to count as "live".
 const LIVE_FRESH: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Duration of a Follow camera glide between focus targets.
-const GLIDE_SECS: f64 = 0.5;
+/// Duration of a Follow camera glide between focus targets: SEED's longest
+/// motion step, `duration.d6` (300 ms).
+const GLIDE_SECS: f64 = 0.3;
+
+/// How long a snackbar notice stays: ten `duration.d6` steps.
+pub const SNACK_FOR: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a status change stays emphasised: SEED `duration.color-transition`.
+pub const FLASH_FOR: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Offset distance (world units) below which a glide is a no-op snap — avoids
 /// micro-glides and lets a stationary followed agent settle exactly on target.
@@ -166,23 +175,13 @@ pub struct App {
     /// Who drives the viewport: overview (auto-fit), follow (track activity),
     /// or manual. Manual pan/zoom takes the camera; `o`/`f` give it back.
     pub camera: Camera,
-    /// Scroll offset for the selected agent's tool-call list in the detail
-    /// panel. The renderer clamps this to the real maximum and writes it back, so
-    /// it always reflects the actual top line (the scroll indicator reads it).
-    pub detail_scroll: u16,
-    /// Whether the detail panel auto-tails (bottom-anchors to the newest tool
-    /// call). True by default and after selecting an agent; scrolling up detaches
-    /// it; scrolling back to the bottom re-attaches. Independent of the camera.
-    pub detail_follow: bool,
-    /// Ephemeral tool-call chips drawn as an overlay below agent cards.
-    pub chips: ChipTray,
     /// Whether the help overlay is shown (`?` toggles, `esc` closes).
     pub show_help: bool,
     /// Layout deferred while the camera is Manual: structural changes use
     /// local placement only (nothing existing moves under the user); the full
     /// Sugiyama runs when the camera re-engages (`o`/`f`).
     pub layout_dirty: bool,
-    /// Most recent tailer error, surfaced in the status bar (`None` = healthy).
+    /// Most recent tailer error, surfaced in the hint bar (`None` = healthy).
     pub last_error: Option<String>,
     /// True once the event loop should terminate.
     pub should_quit: bool,
@@ -195,19 +194,8 @@ pub struct App {
     /// [`session`](Self::session); advanced each frame by
     /// [`tick_timeline`](Self::tick_timeline).
     pub timeline: Timeline,
-    /// Screen rect of the scrubber bar from the last render, so the input
-    /// handler can map a click/drag on it to a seek. `None` when not drawn.
-    pub scrubber_area: Option<ratatui::layout::Rect>,
-    /// Cached per-column scrubber tallies (head-independent), recomputed only when
-    /// the item count or bar width changes — not every frame. See
-    /// [`crate::ui::ScrubberTally`].
-    pub(crate) scrubber_tally: Option<crate::ui::ScrubberTally>,
-    /// Cached era-header flags for the detail panel's tool list — the
-    /// O(calls × prompts) attribution, recomputed only when the selected
-    /// agent / its calls / the prompts change. See [`crate::ui::panel::EraCache`].
-    pub(crate) era_cache: Option<crate::ui::panel::EraCache>,
     /// When the last genuine append (tail `Batch`) folded — drives the emergent
-    /// "live" state ([`transport`](Self::transport)). `None` until one arrives.
+    /// "live" state ([`transport_at`](Self::transport_at)). `None` until one arrives.
     pub last_batch_at: Option<web_time::Instant>,
     /// Session-level metadata kept OFF the timeline (final mode/permission-mode,
     /// last prompt, queued/file-edit counts), shown in the `i` overlay. Session-
@@ -215,16 +203,16 @@ pub struct App {
     pub session_info: SessionInfo,
     /// Whether the `i` session-info overlay is shown (`i` toggles, `esc` closes).
     pub show_info: bool,
-    /// Node id awaiting a center-glide, set on a user selection and consumed by
-    /// `draw` AFTER the flow has rendered into the split (narrower) canvas —
-    /// `center_on` probes the last-rendered size, so centering at event time
-    /// would target the pre-split width.
+    /// Node id awaiting a center-glide, set on a selection and consumed by the
+    /// graph view AFTER the flow has rendered — `center_on` probes the
+    /// last-rendered size, so centering at event time would use a stale or
+    /// absent canvas.
     pub pending_center: Option<String>,
-    /// Scrub target (bar fraction) queued by input handling, applied once per
-    /// frame by [`tick_timeline`](Self::tick_timeline) — a burst of drag events
-    /// costs ONE seek (a backward seek rebuilds the whole model), not one per
-    /// mouse event.
-    pub pending_seek: Option<f64>,
+    /// Scrub target (a time on the lane axis) queued by input handling,
+    /// applied once per frame by [`tick_timeline`](Self::tick_timeline) — a
+    /// burst of drag events costs ONE seek (a backward seek rebuilds the whole
+    /// model), not one per mouse event.
+    pub pending_seek: Option<chrono::DateTime<chrono::Utc>>,
     /// Ladder of folded-model snapshots, ascending by `folded`, used to start a
     /// backward seek near its target instead of re-folding from item zero.
     snapshots: Vec<Snapshot>,
@@ -232,6 +220,30 @@ pub struct App {
     /// [`tick_animation`](Self::tick_animation) exactly as rataflow advances
     /// its own), so the frame loop can see when the ants' phase changes.
     ants_ms: u64,
+    /// Which view the body shows.
+    pub view: View,
+    /// The agent the user is looking at, shared by every view.
+    pub selection: Selection,
+    /// A transient notice, shown until its deadline.
+    pub snackbar: Option<Snack>,
+    /// Agents whose status just changed, emphasised briefly.
+    pub flash: Option<Flash>,
+    /// Lane view: fold idle stretches of the time axis (`z`).
+    pub fold_gaps: bool,
+    /// Where the last frame put clickable things.
+    pub hit: HitMap,
+    /// First agent row the Now view shows (it scrolls to keep the selection
+    /// visible and writes the offset back).
+    pub now_offset: usize,
+    /// The loop's clock, set every tick ([`tick_clock`](Self::tick_clock)).
+    /// Rendering reads monotonic time from here (snackbar and flash deadlines)
+    /// rather than from the system.
+    pub clock: web_time::Instant,
+    /// The offset clock times are shown in: the local zone when the app
+    /// starts; tests pin UTC.
+    pub utc_offset: chrono::FixedOffset,
+    /// Statuses as of the last sync, to notice changes worth a flash.
+    last_statuses: std::collections::HashMap<String, session::AgentStatus>,
 }
 
 impl App {
@@ -245,18 +257,12 @@ impl App {
             is_paused: false,
             current_session_id: session_id,
             camera: Camera::Overview,
-            detail_scroll: 0,
-            detail_follow: true,
-            chips: ChipTray::default(),
             show_help: false,
             layout_dirty: false,
             last_error: None,
             should_quit: false,
             camera_glide: None,
             timeline: Timeline::new(),
-            scrubber_area: None,
-            scrubber_tally: None,
-            era_cache: None,
             last_batch_at: None,
             session_info: SessionInfo::default(),
             show_info: false,
@@ -264,17 +270,29 @@ impl App {
             pending_seek: None,
             snapshots: Vec::new(),
             ants_ms: 0,
+            view: View::Now,
+            selection: Selection::default(),
+            snackbar: None,
+            flash: None,
+            fold_gaps: true,
+            hit: HitMap::default(),
+            now_offset: 0,
+            clock: web_time::Instant::now(),
+            utc_offset: *chrono::Local::now().offset(),
+            last_statuses: Default::default(),
         }
     }
 
-    /// Derive the emergent transport state for display (status badge + scrubber
-    /// tag). "Live" requires both following the edge AND a recent append, so an
-    /// old session followed to its (static) edge reads `Idle`, not `Live`.
+    /// The transport state as of now — a test shorthand; the ui reads
+    /// [`transport_at`](Self::transport_at) with the loop's clock.
+    #[cfg(test)]
     pub fn transport(&self) -> Transport {
         self.transport_at(web_time::Instant::now())
     }
 
-    /// [`transport`](Self::transport) as of `now`.
+    /// The emergent transport state at `now` (the top bar's badge). "Live"
+    /// requires both following the edge AND a recent append, so an old
+    /// session followed to its (static) edge reads `Idle`, not `Live`.
     pub fn transport_at(&self, now: web_time::Instant) -> Transport {
         // Paused is explicit user intent, so it outranks "parked in the past":
         // pausing drops `follow_head` (it parks the cursor), and a deliberate
@@ -300,9 +318,9 @@ impl App {
         Transport::Idle
     }
 
-    /// Seek to a fraction (`0.0..=1.0`) along the timeline — a scrubber
-    /// click/drag. Index-based (see `Timeline::progress`), so the playhead
-    /// lands under the cursor and activity is evenly reachable. No-op when empty.
+    /// Seek to a fraction (`0.0..=1.0`) of the timeline. Index-based (see
+    /// `Timeline::fold_at_fraction`), so activity is evenly reachable. No-op
+    /// when empty.
     pub fn seek_to_fraction(&mut self, f: f64) {
         let len = self.timeline.items.len();
         if len == 0 {
@@ -490,13 +508,15 @@ impl App {
                 // initial announce, truncation, or auto-switch). Replay arrives
                 // via ReplayLoaded, never a reset.
                 self.timeline = Timeline::new();
+                self.last_statuses.clear();
+                self.flash = None;
                 if genuine {
                     self.camera = Camera::Overview;
-                    self.detail_scroll = 0;
-                    self.detail_follow = true;
+                    self.selection = Selection::default();
+                    self.now_offset = 0;
                     self.layout_dirty = false;
-                    self.chips.clear();
                     self.camera_glide = None;
+                    self.snack("Switched to a new session");
                 }
             }
             UiEvent::Error(msg) => {
@@ -508,8 +528,8 @@ impl App {
     /// Fold the timeline prefix forward to `target` items and reconcile the view.
     ///
     /// The shared fold path for both feeders (live `Batch` append and replay
-    /// pacing): apply newly-due updates to the model, re-sync the graph, spawn/
-    /// retire overlay chips, and reframe for the camera. A no-op when nothing new
+    /// pacing): apply newly-due updates to the model, re-sync the graph, note
+    /// status changes, and reframe for the camera. A no-op when nothing new
     /// is due. Backward moves (`target < folded`) are a seek and rebuild, handled
     /// in [`seek`](Self::seek) — not here.
     fn fold_to(&mut self, target: usize) {
@@ -610,21 +630,13 @@ impl App {
     /// Post-apply step shared by `fold_to` (forward, index-based — replay pacing
     /// and seeks) and the live `Batch` path (which applies updates directly,
     /// since the model is order-independent and `items` is kept ts-sorted): roll
-    /// workflow status up, re-sync the graph, animate new chips (or seed silently
-    /// on the first live backfill), and reframe the camera.
+    /// workflow status up, re-sync the graph, note status changes worth a
+    /// flash, and reframe the camera.
     fn commit_fold(&mut self, structural: bool) {
         let sync_structural = self.resync();
-
-        // The chip tray is derived from model state every frame by
-        // `chips.reconcile` (in `tick_timeline`), so a fold needs no per-fold
-        // spawn. The one exception is the live-attach backfill: the first live
-        // fold carries the whole existing file, and history isn't activity —
-        // absorb it silently so `reconcile` won't animate it as new completions.
-        // (Replay is paced, so every fold there is genuine activity we let
-        // `reconcile` pick up.)
-        if self.mode == Mode::Live && !self.chips.is_seeded() {
-            self.chips.adopt_baseline(&self.session);
-        }
+        // The first live fold carries the whole existing file: the baseline is
+        // empty then, so history is absorbed without flashing.
+        self.note_status_changes(true);
 
         match self.camera {
             // Overview: a structural change re-frames the graph (deferred fit,
@@ -647,8 +659,8 @@ impl App {
     /// replay end, settle interactive agents to idle exactly once.
     pub fn tick_timeline(&mut self, elapsed: std::time::Duration) {
         // Apply at most one queued scrub per frame (see `pending_seek`).
-        if let Some(f) = self.pending_seek.take() {
-            self.seek_to_fraction(f);
+        if let Some(t) = self.pending_seek.take() {
+            self.seek(t);
         }
         self.timeline.advance(elapsed, self.is_paused);
         let target = self.timeline.fold_target();
@@ -658,22 +670,16 @@ impl App {
             // (completion is unclaimable; activity is provably absent).
             self.session.end_of_stream();
             self.resync();
+            self.note_status_changes(true);
         }
-        // Reconcile the chip tray against model state. Completed-run afterglows
-        // age in playing wall-time: real time accrues only while the playhead
-        // advances (following, not paused), so the afterglow is a stable viewing
-        // window regardless of speed or gap-compression, and a chip you pause on
-        // stays put. Runs every frame so a fold's new activity and a seek's
-        // reconstructed in-flight tools surface without a per-fold spawn.
-        let playing = self.timeline.follow_head && !self.is_paused;
-        self.chips.reconcile(elapsed, playing, &self.session);
     }
 
-    /// Seek the playhead to `target` (a scrubber drag/jump) and rebuild the view
+    /// Seek the playhead to `target` (a lane-axis click, an arrow step) and
+    /// rebuild the view
     /// as-of-then. Forward seeks fold the new prefix in place (cheap); backward
     /// seeks rebuild a fresh model from the prefix (see `rebuild_to`). Re-pins
     /// to the edge when seeking to/past the head. A seek is discontinuous, so
-    /// ephemerals (chips, glide) reset rather than animate across the jump.
+    /// the glide resets rather than animating across the jump.
     ///
     pub fn seek(&mut self, target: chrono::DateTime<chrono::Utc>) {
         let head = self.timeline.head_ts();
@@ -686,14 +692,13 @@ impl App {
     /// Move the model to `target` folded items — the shared body of every seek
     /// (by time, fraction, or index). Assumes `cursor`/`follow_head` are already
     /// set. Forward folds in place; backward rebuilds (see `rebuild_to`). A
-    /// seek is discontinuous, so ephemerals (chips, glide) reset rather than
-    /// animate across the jump.
+    /// seek is discontinuous, so the glide resets rather than animating across
+    /// the jump, and status changes become the new baseline instead of flashing.
     ///
     fn commit_seek(&mut self, target: usize) {
-        // A seek changes which tools the panel shows — a stale scroll offset would
-        // blank the (now-shorter) list until the user scrolled.
-        self.detail_scroll = 0;
-        self.detail_follow = true;
+        // A seek changes which tools the detail lists — a stale scroll offset
+        // would blank the (now-shorter) list until the user scrolled.
+        self.selection.reset_scroll();
         // A seek is a discontinuous jump → drop the stale per-gap pacing budget.
         self.timeline.reset_pacing();
         // Seeking to the live edge means "follow from here" — a lingering pause
@@ -710,11 +715,8 @@ impl App {
         }
 
         self.camera_glide = None;
-        // Re-baseline from the post-seek model: absorb the completed history at
-        // this playhead silently (don't replay its afterglow), leaving the next
-        // `reconcile` to reconstruct the tools in-flight here — a pending tool is
-        // state and must appear wherever you scrub into its interval.
-        self.chips.adopt_baseline(&self.session);
+        self.flash = None;
+        self.note_status_changes(false);
         // A seek is time-navigation, not a spatial change — the camera is the
         // user's, so don't reframe it (that snapped the graph on every scrub
         // click). Only Follow tracks the action, and it glides (smooth, not a
@@ -841,6 +843,7 @@ impl App {
             // Status flips never change topology, so this is a content-only sync;
             // layout stays user-driven (no auto-relayout — see `resync`).
             graph::sync(&mut self.flow, &self.session, false);
+            self.note_status_changes(true);
         }
         let following = self.camera == Camera::Follow;
         if following {
@@ -860,14 +863,10 @@ impl App {
             return;
         };
         self.center_node(&id, true); // Follow: clamp zoom for readability.
-        // In Follow the panel narrates the followed agent. `select_node` is quiet
-        // (no SelectionChanged), so this never trips the drop-Follow detection in
-        // the handler — a user selection, which does fire it, drops to Manual and
-        // stops this auto-narration entirely.
+        // In Follow the selection narrates the followed agent. This is not a
+        // user gesture, so it must not drop Follow the way `select_agent` does.
         if self.selected_agent_id().as_deref() != Some(id.as_str()) {
-            self.flow.select_node(&id);
-            self.detail_scroll = 0;
-            self.detail_follow = true;
+            self.mirror_selection(Some(id));
         }
     }
 
@@ -877,7 +876,7 @@ impl App {
     ///
     /// The pan always glides. `clamp_zoom` additionally snaps the zoom into the
     /// card-readable band — raised to [`FOLLOW_ZOOM`], then clamped down so the
-    /// whole card fits the (possibly panel-split) canvas. That snap belongs to
+    /// whole card fits the canvas. That snap belongs to
     /// **Follow** (auto-tracking must guarantee legibility) and explicit centering,
     /// so those pass `true`. Manual spatial-nav passes `false`: an arrow press is
     /// just a pan, and must not yank the zoom the user set (the snap-vs-glide
@@ -940,8 +939,9 @@ impl App {
     /// Advance an in-progress camera glide by `dt`, writing the eased offset to
     /// the viewport. Called every frame from the event loop; a no-op when no
     /// glide is active. Viewport writes are quiet, so this never trips the
-    /// Manual-camera detection. Returns whether the viewport moved — true on
-    /// the glide's last step too, when it lands and stops animating.
+    /// Manual-camera detection. Returns whether the move shows — the viewport
+    /// moved and the graph is on screen — true on the glide's last step too,
+    /// when it lands and stops animating.
     pub fn tick_camera(&mut self, dt: std::time::Duration) -> bool {
         let Some(glide) = self.camera_glide.as_mut() else {
             return false;
@@ -955,7 +955,7 @@ impl App {
             self.flow.viewport.set_offset(to.0, to.1);
             self.camera_glide = None;
         }
-        true
+        self.view == View::Graph
     }
 
     /// Advance rataflow's edge animation by `elapsed`, keeping the app's
@@ -979,10 +979,131 @@ impl App {
         panned || self.flow.is_dragging()
     }
 
-    /// The node id of the currently selected agent, if any (read from the flow
-    /// during render; copy it out before borrowing `app` mutably).
+    /// The selected agent's id, shared by every view.
     pub fn selected_agent_id(&self) -> Option<String> {
-        self.flow.selected_nodes().next().map(|n| n.id.clone())
+        self.selection.agent.clone()
+    }
+
+    /// The agent rows every view lists: tree order, with depth.
+    pub fn agent_rows(&self) -> Vec<(String, usize)> {
+        self.session
+            .tree_order()
+            .into_iter()
+            .map(|(id, depth)| (id.to_string(), depth))
+            .collect()
+    }
+
+    /// Select `id` (or nothing) as the user's own choice: the detail list
+    /// returns to its newest call, the graph's selection mirrors it (quietly,
+    /// so no flow event echoes back), the graph glides to it, and Follow hands
+    /// the camera to the user.
+    pub fn select_agent(&mut self, id: Option<String>) {
+        if self.selection.agent == id {
+            return;
+        }
+        if self.camera == Camera::Follow {
+            self.camera = Camera::Manual;
+            self.camera_glide = None;
+        }
+        self.mirror_selection(id);
+        self.pending_center = self.selection.agent.clone();
+    }
+
+    /// Point the selection at `id` without any of a user gesture's side
+    /// effects on the camera: what Follow does as it narrates.
+    fn mirror_selection(&mut self, id: Option<String>) {
+        match id.as_deref() {
+            Some(node) => self.flow.select_node(node),
+            None => self.flow.clear_selection(),
+        }
+        self.selection.agent = id;
+        self.selection.expanded = false;
+        self.selection.reset_scroll();
+    }
+
+    /// Move the selection `step` rows along the tree (`j`/`k`). Starts at the
+    /// root when nothing is selected; stops at either end.
+    pub fn select_step(&mut self, step: isize) {
+        let rows = self.session.tree_order();
+        if rows.is_empty() {
+            return;
+        }
+        let current = self
+            .selection
+            .agent
+            .as_deref()
+            .and_then(|id| rows.iter().position(|(r, _)| *r == id));
+        let next = match current {
+            None => 0,
+            Some(at) => (at as isize + step).clamp(0, rows.len() as isize - 1) as usize,
+        };
+        let id = rows[next].0.to_string();
+        self.select_agent(Some(id));
+    }
+
+    /// Switch the body to `view`.
+    pub fn set_view(&mut self, view: View) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.selection.detail = false;
+        // The graph keeps its own camera; bring the selection into its frame
+        // once it is drawn.
+        if view == View::Graph {
+            self.pending_center = self.selection.agent.clone();
+        }
+    }
+
+    /// Show a short notice for [`SNACK_FOR`].
+    pub fn snack(&mut self, message: impl Into<String>) {
+        self.snackbar = Some(Snack {
+            message: message.into(),
+            until: self.clock + SNACK_FOR,
+        });
+    }
+
+    /// Advance the app's clock to `now`, retiring notices that have expired.
+    pub fn tick_clock(&mut self, now: web_time::Instant) {
+        self.clock = now;
+        if self.snackbar.as_ref().is_some_and(|s| s.until <= now) {
+            self.snackbar = None;
+        }
+        if self.flash.as_ref().is_some_and(|f| f.until <= now) {
+            self.flash = None;
+        }
+    }
+
+    /// Compare each agent's status with the last sync's. With `flash`, the
+    /// agents that changed are emphasised for [`FLASH_FOR`]; without (a seek,
+    /// a first load) the new statuses just become the baseline — history is
+    /// not news.
+    fn note_status_changes(&mut self, flash: bool) {
+        let flash = flash && !self.last_statuses.is_empty();
+        let mut changed = Vec::new();
+        for id in self.session.spawn_order() {
+            let Some(agent) = self.session.agent(id) else {
+                continue;
+            };
+            match self.last_statuses.get_mut(id) {
+                Some(before) if *before == agent.status => {}
+                Some(before) => {
+                    *before = agent.status;
+                    if flash {
+                        changed.push(id.to_string());
+                    }
+                }
+                None => {
+                    self.last_statuses.insert(id.to_string(), agent.status);
+                }
+            }
+        }
+        if !changed.is_empty() {
+            self.flash = Some(Flash {
+                ids: changed,
+                until: self.clock + FLASH_FOR,
+            });
+        }
     }
 
     /// Drop every ladder rung, keeping the folded model and the canvas.
@@ -1025,7 +1146,7 @@ impl App {
     /// Every event here is the product of a USER gesture (programmatic mutations
     /// are quiet), so the rule is uniform: Follow yields to ANY interaction;
     /// Overview yields only to a viewport change (pan/zoom). A selection change
-    /// resets the detail-panel scroll. Shared by the native input handler and
+    /// resets the detail list's scroll. Shared by the native input handler and
     /// the browser frontend.
     pub fn process_flow_events(&mut self, events: impl Iterator<Item = rataflow::FlowEvent>) {
         use rataflow::FlowEvent;
@@ -1038,12 +1159,13 @@ impl App {
                 self.camera_glide = None;
             }
             if let FlowEvent::SelectionChanged { node_ids, .. } = &event {
-                self.detail_scroll = 0;
-                self.detail_follow = true;
+                self.selection.agent = node_ids.first().cloned();
+                self.selection.expanded = false;
+                self.selection.reset_scroll();
                 // Pan the selected node to center (pan-only — the arrow-nav path
                 // does NOT clamp zoom; see `center_node`). Deferred to the next
-                // draw, which sees the post-split canvas width. A deselection
-                // clears any not-yet-consumed one.
+                // graph draw, which knows the canvas size. A deselection clears
+                // any not-yet-consumed one.
                 self.pending_center = node_ids.first().cloned();
             }
         }
@@ -1053,7 +1175,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fact::Statement;
+    use crate::fact::{Fact, FactKind, Statement};
     use crate::provider::claude::wire::SubagentMeta;
     use crate::provider::claude::{Record, Source};
     use crate::tailer::UiEvent;
@@ -1111,24 +1233,33 @@ mod tests {
     }
 
     #[test]
-    fn first_live_batch_seeds_chips_silently() {
+    fn status_changes_flash_but_history_does_not() {
         let mut app = App::new("s".into(), Mode::Live);
         app.handle_ui_event(UiEvent::Batch {
             session_id: "s".into(),
             statements: vec![meta_update("sub1")],
         });
-        assert!(
-            app.chips.is_seeded(),
-            "live attach must adopt backfill without chipping"
-        );
+        assert!(app.flash.is_none(), "the live-attach backfill is history");
 
-        // Replay never seeds — every paced batch is genuine activity.
-        let mut replay = App::new("s".into(), Mode::Replay);
-        replay.handle_ui_event(UiEvent::Batch {
+        let ended = Statement {
+            at: None,
+            facts: vec![Fact {
+                agent: Some("sub1".into()),
+                ts: None,
+                kind: FactKind::Ended(crate::fact::AgentStatus::Done),
+            }],
+        };
+        app.handle_ui_event(UiEvent::Batch {
             session_id: "s".into(),
-            statements: vec![meta_update("sub1")],
+            statements: vec![ended],
         });
-        assert!(!replay.chips.is_seeded());
+        let flash = app.flash.clone().expect("a status change flashes");
+        assert_eq!(flash.ids, ["sub1"]);
+        assert_eq!(flash.until, app.clock + FLASH_FOR);
+
+        // The loop's clock retires it.
+        app.tick_clock(app.clock + FLASH_FOR);
+        assert!(app.flash.is_none());
     }
 
     #[test]
@@ -1161,13 +1292,13 @@ mod tests {
     fn status_tick_resumes_follow_narration() {
         let mut app = App::new("s".into(), Mode::Live);
         app.camera = Camera::Follow;
-        // Seed chips (live mode first batch) then deliver an agent.
+        // Deliver an agent while following.
         app.handle_ui_event(UiEvent::Batch {
             session_id: "s".into(),
             statements: vec![meta_update("sub1")],
         });
         // Simulate a moment with no selection (e.g. just after a reset).
-        app.flow.clear_selection();
+        app.selection.agent = None;
         assert!(app.selected_agent_id().is_none());
 
         // The 1s status tick must re-engage auto-narration without a batch.
@@ -1354,7 +1485,7 @@ mod tests {
             .set_node_positions(std::iter::once((early, (123.0, 456.0))));
         app.flow.zoom_to(2.5);
         let viewport = app.flow.viewport;
-        app.flow.select_node(early);
+        app.select_agent(Some(early.to_string()));
 
         // Seek back to before sub5 (and sub4, sub3…) were ever spawned.
         app.seek_to_fraction(2.0 / 6.0);
@@ -1563,7 +1694,7 @@ mod tests {
         // Seek to the end: forward fold brings sub2 in. Select it... then sub1.
         app.seek(t2);
         assert!(app.session.agent("sub2").is_some());
-        app.flow.select_node("sub1");
+        app.select_agent(Some("sub1".into()));
 
         // Seek back before sub2 existed: rebuild must drop it AND keep selection.
         app.seek("2026-06-05T10:00:05.000Z".parse().unwrap());

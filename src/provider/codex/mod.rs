@@ -91,6 +91,7 @@ impl Stream {
                 kind: FactKind::Tokens {
                     output,
                     dedup: None,
+                    cost_usd: None,
                 },
             }],
         })
@@ -220,10 +221,14 @@ impl Stream {
                         if let Some(call) = &fc.call_id {
                             let name = fc.name.clone().unwrap_or_default();
                             let summary = summarize_function(&name, fc);
+                            let intent = (name == "spawn_agent")
+                                .then(|| fc.argument("task_name").map(|s| truncate_summary(&s)))
+                                .flatten();
                             out.push(by(FactKind::ToolStart {
                                 call: call.clone(),
                                 name: name.clone(),
                                 summary,
+                                intent,
                             }));
                             if is_spawn_tool(&name) {
                                 out.push(by(FactKind::Spawn { call: call.clone() }));
@@ -247,6 +252,7 @@ impl Stream {
                                 call: call.clone(),
                                 name,
                                 summary,
+                                intent: None,
                             }));
                         }
                     }
@@ -305,6 +311,7 @@ impl Stream {
                             out.push(by(FactKind::Tokens {
                                 output: added,
                                 dedup: None,
+                                cost_usd: None,
                             }));
                         }
                     }
@@ -362,6 +369,7 @@ impl Stream {
                     call: call.clone(),
                     name,
                     summary,
+                    intent: None,
                 },
             });
             out.push(Fact {
@@ -714,7 +722,7 @@ mod tests {
         let start = s.push(r#"{"timestamp":"2026-08-26T16:10:54.748Z","ordinal":1,"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"cargo test\", \"workdir\":\"/p\"});"}}"#).unwrap();
         assert!(matches!(
             &start.facts[0].kind,
-            FactKind::ToolStart { call, name, summary } if call == "call_1" && name == "exec" && summary.as_deref() == Some("cargo test")
+            FactKind::ToolStart { call, name, summary, .. } if call == "call_1" && name == "exec" && summary.as_deref() == Some("cargo test")
         ));
         let ran = s.push(r#"{"timestamp":"2026-08-26T16:10:54.934Z","ordinal":2,"type":"event_msg","payload":{"type":"item_completed","thread_id":"a","item":{"type":"CommandExecution","id":"exec-1","command":["/bin/zsh","-lc","cargo test"],"parsed_cmd":[{"type":"unknown","cmd":"cargo test"}],"status":"failed","exit_code":101},"started_at_ms":1787760650000,"completed_at_ms":1787760654000}}"#).unwrap();
         assert!(
@@ -795,5 +803,27 @@ mod tests {
             ),
             "apply_patch: app.js, theme.js"
         );
+    }
+}
+
+#[cfg(test)]
+mod intent_tests {
+    use super::*;
+
+    #[test]
+    fn codex_spawn_task_name_is_intent() {
+        let mut s = Stream::new();
+        s.push(r#"{"ordinal":0,"type":"session_meta","payload":{"id":"a","session_id":"a","source":"cli","thread_source":"user"}}"#);
+        let st = s.push(r#"{"timestamp":"2026-08-26T16:13:35.485Z","ordinal":1,"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","arguments":"{\"task_name\":\"explore_theme\"}","call_id":"call_s"}}"#).unwrap();
+        assert!(st.facts.iter().any(|f| matches!(
+            &f.kind,
+            FactKind::ToolStart { call, intent, .. }
+                if call == "call_s" && intent.as_deref() == Some("explore_theme")
+        )));
+        let st = s.push(r#"{"timestamp":"2026-08-26T16:13:36.485Z","ordinal":2,"type":"response_item","payload":{"type":"function_call","name":"send_message","arguments":"{\"recipient\":\"x\"}","call_id":"call_m"}}"#).unwrap();
+        assert!(st.facts.iter().any(|f| matches!(
+            &f.kind,
+            FactKind::ToolStart { call, intent: None, .. } if call == "call_m"
+        )));
     }
 }

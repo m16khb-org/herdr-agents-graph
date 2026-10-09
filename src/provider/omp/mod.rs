@@ -88,6 +88,12 @@ use wire::{
     ContentBlock, Entry, MessageBody, ToolExecutionStart, UserMessage, is_spawn_tool, parse_line,
 };
 
+/// An omp call's own `intent`, cut to summary length — what the call is shown
+/// as, both as its intent and (unchanged from earlier releases) its summary.
+fn stated_intent(intent: Option<&str>) -> Option<String> {
+    intent.map(truncate_summary).filter(|s| !s.is_empty())
+}
+
 /// One session file being read: the interactive root, or a spawned child's
 /// own transcript (omp only — see `super`). The only cross-line state this
 /// format needs: an inherited timestamp (like Claude, since a `custom`
@@ -302,6 +308,7 @@ impl Stream {
                         kind: FactKind::Tokens {
                             output,
                             dedup: a.response_id.clone(),
+                            cost_usd: usage.cost_usd(),
                         },
                     });
                 }
@@ -330,17 +337,14 @@ impl Stream {
                             // `intent` is the agent's own one-line reason for
                             // the call — used directly, never reconstructed
                             // from `arguments` (see `super`).
-                            let summary = tc
-                                .intent
-                                .as_deref()
-                                .map(truncate_summary)
-                                .filter(|s| !s.is_empty());
+                            let summary = stated_intent(tc.intent.as_deref());
                             out.push(Fact {
                                 agent: Some(owner.clone()),
                                 ts: None,
                                 kind: FactKind::ToolStart {
                                     call: call.clone(),
                                     name: name.clone(),
+                                    intent: summary.clone(),
                                     summary,
                                 },
                             });
@@ -428,17 +432,15 @@ impl Stream {
                 if let Ok(start) = ToolExecutionStart::deserialize(&c.data)
                     && let Some(call) = start.tool_call_id
                 {
+                    let summary = stated_intent(start.intent.as_deref());
                     out.push(Fact {
                         agent: Some(owner.clone()),
                         ts: None,
                         kind: FactKind::ToolStart {
                             call,
                             name: start.tool_name.unwrap_or_default(),
-                            summary: start
-                                .intent
-                                .as_deref()
-                                .map(truncate_summary)
-                                .filter(|s| !s.is_empty()),
+                            intent: summary.clone(),
+                            summary,
                         },
                     });
                 }
@@ -839,7 +841,7 @@ mod tests {
         let facts: Vec<&Fact> = stmts.iter().flat_map(|s| &s.facts).collect();
         assert!(facts.iter().any(|f| matches!(
             &f.kind,
-            FactKind::ToolStart { call, name, summary }
+            FactKind::ToolStart { call, name, summary, .. }
                 if call == "t9" && name == "read" && summary.as_deref() == Some("Reading x")
         )));
     }
@@ -855,5 +857,53 @@ mod tests {
             ],
         );
         assert!(stmts.is_empty());
+    }
+
+    fn fold(stmts: &[Statement]) -> crate::state::session::SessionModel {
+        let mut m = crate::state::session::SessionModel::new("s".into());
+        for f in stmts.iter().flat_map(|s| &s.facts) {
+            m.apply_fact(f);
+        }
+        m
+    }
+
+    const OMP_USER: &str = r#"{"type":"message","id":"u","parentId":null,"timestamp":"2026-09-01T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"hi"}],"attribution":"user"}}"#;
+
+    #[test]
+    fn omp_tool_intent_and_cost() {
+        let mut s = Stream::new_root();
+        let stmts = push_all(
+            &mut s,
+            &[
+                OMP_USER,
+                r#"{"type":"message","id":"a","parentId":"u","timestamp":"2026-09-01T00:00:01Z","message":{"role":"assistant","responseId":"r1","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls"},"intent":"list files"}],"usage":{"output":10,"cost":{"input":0.1,"total":0.25}}}}"#,
+                r#"{"type":"message","id":"b","parentId":"a","timestamp":"2026-09-01T00:00:02Z","message":{"role":"assistant","responseId":"r2","content":[],"usage":{"output":5,"cost":0.01}}}"#,
+                r#"{"type":"message","id":"c","parentId":"b","timestamp":"2026-09-01T00:00:03Z","message":{"role":"assistant","responseId":"r2","content":[],"usage":{"output":5,"cost":0.01}}}"#,
+            ],
+        );
+        let m = fold(&stmts);
+        let main = m.agent(MAIN_ID).unwrap();
+        let call = main.tool_calls().next().unwrap();
+        assert_eq!(call.intent.as_deref(), Some("list files"));
+        assert_eq!(call.summary.as_deref(), Some("list files"));
+        assert_eq!(main.output_tokens, 15);
+        // r2 is repeated: its cost counts once, like its tokens.
+        assert!((main.cost_usd.unwrap() - 0.26).abs() < 1e-9);
+    }
+
+    #[test]
+    fn omp_object_cost_keeps_the_rest_of_the_line() {
+        for cost in [r#""free""#, r#"[1,2]"#, r#"{"input":0.1}"#] {
+            let line = format!(
+                r#"{{"type":"message","id":"a","parentId":"u","timestamp":"2026-09-01T00:00:01Z","message":{{"role":"assistant","responseId":"r1","content":[{{"type":"toolCall","id":"t1","name":"bash","arguments":{{}},"intent":"x"}}],"usage":{{"output":7,"cost":{cost}}}}}}}"#
+            );
+            let mut s = Stream::new_root();
+            let stmts = push_all(&mut s, &[OMP_USER, &line]);
+            let m = fold(&stmts);
+            let main = m.agent(MAIN_ID).unwrap();
+            assert_eq!(main.cost_usd, None, "cost {cost}");
+            assert_eq!(main.tool_calls().len(), 1, "cost {cost}");
+            assert_eq!(main.output_tokens, 7, "cost {cost}");
+        }
     }
 }

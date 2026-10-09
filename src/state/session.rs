@@ -21,6 +21,9 @@ pub const MAIN_ID: &str = "main";
 /// this is minutes, not the main agent's seconds-scale file-growth window.
 const INTERACTIVE_IDLE_SECS: i64 = 120;
 
+/// An in-flight tool running at least this long is called out to the user.
+pub const SLOW_TOOL: chrono::Duration = chrono::Duration::seconds(30);
+
 /// The full derived view of a session.
 ///
 /// `Clone` is O(1): every growing collection here is persistent
@@ -68,25 +71,6 @@ pub struct SessionModel {
     /// EARLIER record than the call — this is the cross-record fallback for
     /// [`SpawnContext::reasoning`].
     last_reasoning: HashMap<String, String>,
-}
-
-/// A notable timeline event for the scrubber's log line: a prompt (era
-/// boundary), an agent spawn, or a tool failure. Surfaced by
-/// [`SessionModel::latest_event_at`] and rendered with an icon matching the
-/// scrubber's marker glyphs (◆ / ❋ / ✗).
-#[derive(Debug, Clone)]
-pub struct LogEvent {
-    pub ts: DateTime<Utc>,
-    pub kind: LogKind,
-    pub text: String,
-}
-
-/// Which marker a [`LogEvent`] is — selects the caption's icon and colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogKind {
-    Prompt,
-    Spawn,
-    Failure,
 }
 
 /// One user prompt in the main transcript — an era boundary on the session's
@@ -164,6 +148,8 @@ pub struct ToolCallInfo {
     pub name: String,
     /// Short human summary (e.g. a command or path), if derivable.
     pub summary: Option<String>,
+    /// The agent's own stated reason for the call, when the format carries one.
+    pub intent: Option<String>,
     /// Timestamp of the `tool_use` (when the tool started).
     pub ts: Option<DateTime<Utc>>,
     /// Timestamp of the `tool_result` (when it finished). `None` while pending.
@@ -229,13 +215,22 @@ pub struct AgentInfo {
     /// first time its `requestId` is seen. Lines without a `requestId` fall back
     /// to per-line summation.
     seen_dedup_keys: HashSet<String>,
+    /// Cost in USD the format reported, summed under the same dedup rule as
+    /// `output_tokens`. `None` until any cost is recorded.
+    pub cost_usd: Option<f64>,
 }
 
 impl AgentInfo {
     /// This agent's tool calls, oldest first. See
     /// [`SessionModel::spawn_order`] for why this is an iterator.
-    pub fn tool_calls(&self) -> impl ExactSizeIterator<Item = &ToolCallInfo> {
+    pub fn tool_calls(&self) -> impl DoubleEndedIterator<Item = &ToolCallInfo> + ExactSizeIterator {
         self.tool_calls.iter()
+    }
+
+    /// The `i`-th tool call in start order (O(log n): the list is
+    /// persistent), for readers that binary-search it by time.
+    pub fn tool_call(&self, i: usize) -> Option<&ToolCallInfo> {
+        self.tool_calls.get(i)
     }
 
     /// A fresh agent record of the given kind, defaulting to
@@ -257,6 +252,7 @@ impl AgentInfo {
             first_ts: None,
             last_ts: None,
             seen_dedup_keys: HashSet::new(),
+            cost_usd: None,
         }
     }
 
@@ -268,15 +264,72 @@ impl AgentInfo {
         self.interactive
     }
 
+    /// Whether a reliable completion signal pins this agent's status (see
+    /// `terminal`). A pending call of a non-terminal agent is still in flight,
+    /// however quiet the agent looks.
+    pub fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
     /// The status word for display — delegates to the free [`status_word`] so
     /// cards (`AgentNode`, which has no `AgentInfo`) share the exact wording.
     pub fn status_word(&self) -> &'static str {
         status_word(self.status, self.interactive)
     }
 
+    /// The name an agent is shown under: the type its provider recorded,
+    /// else the generic label for its kind.
+    pub fn display_name(&self) -> &str {
+        self.agent_type
+            .as_deref()
+            .unwrap_or(self.kind.default_label())
+    }
+
     /// Most recent tool call name, if any.
     pub fn last_tool(&self) -> Option<&str> {
         self.tool_calls.last().map(|t| t.name.as_str())
+    }
+
+    /// Append a tool call, keeping the list ordered by start time.
+    ///
+    /// Calls normally arrive in start order, so this is a push. A format that
+    /// states a call only when it completes (Codex reports `ts = started` on
+    /// the completion record) can deliver parallel calls out of order; those
+    /// slide back past the later-starting calls already present, so readers
+    /// that need time order (the lane view's binary search) can rely on it.
+    /// Undated calls never move anything: they stay where they arrive.
+    fn insert_call(&mut self, call: ToolCallInfo) {
+        let mut at = self.tool_calls.len();
+        if let Some(ts) = call.ts {
+            while at > 0 && self.tool_calls[at - 1].ts.is_some_and(|prev| prev > ts) {
+                at -= 1;
+            }
+        }
+        // Only the calls the insert shifts need new indices — none on a plain
+        // append. Indexed access, not `iter().skip(at)`, which would walk
+        // every earlier call.
+        for i in at..self.tool_calls.len() {
+            if let Some(slot) = self.tool_index.get_mut(&self.tool_calls[i].id) {
+                *slot += 1;
+            }
+        }
+        self.tool_index.insert(call.id.clone(), at);
+        self.tool_calls.insert(at, call);
+    }
+
+    /// Tool calls still waiting for their result.
+    pub fn pending_calls(&self) -> impl Iterator<Item = &ToolCallInfo> {
+        self.tool_calls
+            .iter()
+            .filter(|c| c.state == ToolState::Pending)
+    }
+
+    /// The most recent tool call still in flight, if any.
+    pub fn current_call(&self) -> Option<&ToolCallInfo> {
+        self.tool_calls
+            .iter()
+            .rev()
+            .find(|c| c.state == ToolState::Pending)
     }
 
     fn touch_ts(&mut self, ts: Option<DateTime<Utc>>) {
@@ -471,13 +524,22 @@ impl SessionModel {
                     a.model = Some(model.clone());
                 }
             }
-            FactKind::Tokens { output, dedup } => {
+            FactKind::Tokens {
+                output,
+                dedup,
+                cost_usd,
+            } => {
                 if let Some(a) = self.agents.get_mut(id) {
                     match dedup {
                         Some(key) if a.seen_dedup_keys.insert(key.clone()).is_some() => {}
                         // Saturating: counts come from untrusted transcript
                         // content; overflow must not panic (debug) or wrap.
-                        _ => a.output_tokens = a.output_tokens.saturating_add(*output),
+                        _ => {
+                            a.output_tokens = a.output_tokens.saturating_add(*output);
+                            if let Some(c) = cost_usd {
+                                a.cost_usd = Some(a.cost_usd.unwrap_or(0.0) + c);
+                            }
+                        }
                     }
                 }
             }
@@ -500,15 +562,16 @@ impl SessionModel {
                 call,
                 name,
                 summary,
+                intent,
             } => {
                 if let Some(a) = self.agents.get_mut(id)
                     && !a.tool_index.contains_key(call)
                 {
-                    a.tool_index.insert(call.clone(), a.tool_calls.len());
-                    a.tool_calls.push_back(ToolCallInfo {
+                    a.insert_call(ToolCallInfo {
                         id: call.clone(),
                         name: name.clone(),
                         summary: summary.clone(),
+                        intent: intent.clone(),
                         ts: fact.ts,
                         end_ts: None,
                         state: ToolState::Pending,
@@ -844,73 +907,6 @@ impl SessionModel {
         Some(self.prompts.get(idx)?.excerpt.as_str())
     }
 
-    /// The most recent notable timeline event at or before `cursor` — what the
-    /// scrubber narrates as a log line, updating as the playhead crosses each
-    /// marker. Spans the three marker kinds so the line reads like "what's
-    /// happening now": a human prompt (◆), an agent spawn (❋), or a tool failure
-    /// (✗). All are events on the timeline, never stitched onto an agent. Ties
-    /// keep the earlier-considered event; `None` before the first event.
-    ///
-    /// A spawn is timed by the agent's **birth** (when it starts to exist and its
-    /// node appears), not the parent's spawn *call* — mirroring the strip's meta
-    /// ❋. `born_calls` (the spawn `tool_use_id`s that have a discovered
-    /// subagent) lets a call act only as a fallback for spawns whose subagent
-    /// isn't loaded, matching the strip exactly.
-    pub fn latest_event_at(
-        &self,
-        cursor: Option<DateTime<Utc>>,
-        born_calls: &std::collections::BTreeSet<String>,
-    ) -> Option<LogEvent> {
-        let cursor = cursor?;
-        let mut best: Option<LogEvent> = None;
-        let mut consider = |ts: Option<DateTime<Utc>>, kind: LogKind, text: String| {
-            if let Some(ts) = ts
-                && ts <= cursor
-                && best.as_ref().is_none_or(|b| ts > b.ts)
-            {
-                best = Some(LogEvent { ts, kind, text });
-            }
-        };
-        for p in &self.prompts {
-            consider(p.ts, LogKind::Prompt, p.excerpt.clone());
-        }
-        for agent in self.agents.values() {
-            // A subagent's spawn = its birth: mark it when the agent starts to
-            // exist (`first_ts`), where the node appears and the strip's meta ❋ sits.
-            if matches!(agent.kind, AgentKind::Subagent) {
-                let text = agent
-                    .description
-                    .clone()
-                    .or_else(|| agent.agent_type.clone())
-                    .unwrap_or_else(|| "subagent".to_string());
-                consider(agent.first_ts, LogKind::Spawn, text);
-            }
-            for tc in &agent.tool_calls {
-                if self.spawn_context.contains_key(&tc.id) {
-                    // Fallback: a spawn whose subagent isn't loaded (no meta) is
-                    // marked at the call — matching the strip's tool_use fallback.
-                    if !born_calls.contains(&tc.id) {
-                        let text = tc
-                            .summary
-                            .clone()
-                            .unwrap_or_else(|| format!("spawned {}", tc.name));
-                        consider(tc.ts, LogKind::Spawn, text);
-                    }
-                } else if tc.state == ToolState::Err {
-                    let text = match &tc.summary {
-                        Some(s) => format!("{} failed · {s}", tc.name),
-                        None => format!("{} failed", tc.name),
-                    };
-                    // A failure "happens" when the error result returns (`end_ts`),
-                    // not when the tool started — this is also where the scrubber's
-                    // ✗ marker sits, so the log and the strip agree.
-                    consider(tc.end_ts.or(tc.ts), LogKind::Failure, text);
-                }
-            }
-        }
-        best
-    }
-
     /// Which provider's session this is, read off the root's stated name: a
     /// provider names the root after itself, and that name is the one
     /// `Provider::parse` knows. `None` until the root has been stated.
@@ -957,6 +953,111 @@ impl SessionModel {
         }
         best.map(|(id, _)| id.to_string())
     }
+
+    /// Every tool call still in flight, with its agent: the pending calls of
+    /// agents that are not authoritatively finished. A quiet agent's long
+    /// tool still counts — a pending call is stronger evidence of work than
+    /// silence is of completion.
+    pub fn in_flight(&self) -> impl Iterator<Item = (&str, &ToolCallInfo)> {
+        self.agents
+            .iter()
+            .filter(|(_, a)| !a.terminal)
+            .flat_map(|(id, a)| a.pending_calls().map(move |c| (id.as_str(), c)))
+    }
+
+    /// How many in-flight tools have run for [`SLOW_TOOL`] or longer at `wall`.
+    pub fn slow_tools(&self, wall: DateTime<Utc>) -> usize {
+        self.in_flight()
+            .filter(|(_, c)| c.ts.is_some_and(|t| wall - t >= SLOW_TOOL))
+            .count()
+    }
+
+    /// How long the session has run: up to `now` while the root agent is
+    /// running, else up to its last recorded activity. `None` before anything
+    /// is dated.
+    pub fn elapsed(&self, now: Option<DateTime<Utc>>) -> Option<chrono::Duration> {
+        let start = self.agents.values().filter_map(|a| a.first_ts).min()?;
+        let running = self
+            .agents
+            .get(MAIN_ID)
+            .is_some_and(|m| m.status == AgentStatus::Running);
+        let end = if running {
+            now.or(self.last_activity)?
+        } else {
+            self.last_activity?
+        };
+        Some((end - start).max(chrono::Duration::zero()))
+    }
+
+    /// Summed recorded cost across agents; `None` when no agent has any.
+    pub fn cost_usd(&self) -> Option<f64> {
+        self.agents
+            .values()
+            .filter_map(|a| a.cost_usd)
+            .reduce(|a, b| a + b)
+    }
+
+    /// Summed output tokens across agents.
+    pub fn output_tokens(&self) -> u64 {
+        self.agents
+            .values()
+            .fold(0u64, |sum, a| sum.saturating_add(a.output_tokens))
+    }
+
+    /// Every agent in tree order with its depth: the root first, then each
+    /// agent's children in spawn order, depth-first. An agent whose parent is
+    /// unknown hangs under the root, so nothing the model holds is left out.
+    pub fn tree_order(&self) -> Vec<(&str, usize)> {
+        let known = |id: &str| self.agents.contains_key(id);
+        let parent_of = |id: &str| -> Option<&str> {
+            if id == MAIN_ID {
+                return None;
+            }
+            match self.agents.get(id)?.parent.as_deref() {
+                Some(p) if p != id && known(p) => Some(p),
+                _ if known(MAIN_ID) => Some(MAIN_ID),
+                _ => None,
+            }
+        };
+        let mut children: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+        let mut roots = Vec::new();
+        for id in &self.spawn_order {
+            match parent_of(id) {
+                Some(p) => children.entry(p).or_default().push(id),
+                None => roots.push(id.as_str()),
+            }
+        }
+        let mut out = Vec::with_capacity(self.spawn_order.len());
+        let mut stack: Vec<(&str, usize)> = roots.into_iter().rev().map(|r| (r, 0)).collect();
+        while let Some((id, depth)) = stack.pop() {
+            // A parent cycle in hostile input would otherwise loop forever.
+            if out.len() > self.spawn_order.len() {
+                break;
+            }
+            out.push((id, depth));
+            if let Some(kids) = children.get(id) {
+                stack.extend(kids.iter().rev().map(|k| (*k, depth + 1)));
+            }
+        }
+        out
+    }
+
+    /// One line saying what an agent is doing: the stated intent of the call
+    /// it is running, else what it was spawned to do, else its latest
+    /// reasoning (stored as a one-line excerpt), else the summary of its last
+    /// tool call.
+    pub fn intent_line(&self, id: &str) -> Option<&str> {
+        let agent = self.agents.get(id)?;
+        said(agent.current_call().and_then(|c| c.intent.as_deref()))
+            .or_else(|| said(agent.description.as_deref()))
+            .or_else(|| said(self.last_reasoning.get(id).map(String::as_str)))
+            .or_else(|| said(agent.tool_calls.last().and_then(|c| c.summary.as_deref())))
+    }
+}
+
+/// `s` if it says anything: blank intents and summaries count as unstated.
+pub(crate) fn said(s: Option<&str>) -> Option<&str> {
+    s.filter(|s| !s.trim().is_empty())
 }
 
 /// One-line excerpt for provenance display: whitespace collapsed, hard cap so
@@ -982,131 +1083,6 @@ mod tests {
     /// fixture itself is malformed (parser returns `None`).
     fn entry(line: &str) -> Entry {
         parse_line(line).expect("test fixture must parse")
-    }
-
-    #[test]
-    fn latest_event_at_narrates_across_marker_kinds() {
-        let ts = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
-        let tool =
-            |id: &str, name: &str, summary: &str, t: &str, end: Option<&str>, state: ToolState| {
-                ToolCallInfo {
-                    id: id.into(),
-                    name: name.into(),
-                    summary: Some(summary.into()),
-                    ts: Some(ts(t)),
-                    end_ts: end.map(ts),
-                    state,
-                }
-            };
-        let mut m = SessionModel::new("s".into());
-        m.prompts.push_back(PromptInfo {
-            excerpt: "review the codebase".into(),
-            ts: Some(ts("2026-06-05T10:00:00Z")),
-        });
-        let main = m.agents.get_mut(MAIN_ID).unwrap();
-        main.tool_calls.push_back(tool(
-            "s1",
-            "Agent",
-            "hunt bugs",
-            "2026-06-05T10:05:00Z",
-            None,
-            ToolState::Ok,
-        ));
-        // A slow Bash: started 10:10, failed (result) at 10:12.
-        main.tool_calls.push_back(tool(
-            "b1",
-            "Bash",
-            "cargo test",
-            "2026-06-05T10:10:00Z",
-            Some("2026-06-05T10:12:00Z"),
-            ToolState::Err,
-        ));
-        // A later SUCCESSFUL non-spawn tool is not a log event.
-        main.tool_calls.push_back(tool(
-            "r1",
-            "Read",
-            "src/lib.rs",
-            "2026-06-05T10:15:00Z",
-            None,
-            ToolState::Ok,
-        ));
-
-        // Which calls spawn is provenance the provider states, not a tool name
-        // the model recognises: record it as the fold would.
-        m.apply_fact(&Fact {
-            agent: Some(MAIN_ID.to_string()),
-            ts: Some(ts("2026-06-05T10:05:00Z")),
-            kind: FactKind::Spawn { call: "s1".into() },
-        });
-
-        // No subagent is loaded here, so the spawning call ("s1") is the
-        // fallback spawn marker (at call time).
-        let none = std::collections::BTreeSet::new();
-
-        // Before the first event, and with no playhead → nothing.
-        assert!(
-            m.latest_event_at(Some(ts("2026-06-05T09:00:00Z")), &none)
-                .is_none()
-        );
-        assert!(m.latest_event_at(None, &none).is_none());
-
-        let at = |t: &str| m.latest_event_at(Some(ts(t)), &none).expect("an event");
-        // Prompt → spawn (its summary) → failure. The later successful Read is
-        // skipped, so at 10:20 the failure is still the latest event.
-        let p = at("2026-06-05T10:02:00Z");
-        assert_eq!(p.kind, LogKind::Prompt);
-        assert_eq!(p.text, "review the codebase");
-        let s = at("2026-06-05T10:07:00Z");
-        assert_eq!(s.kind, LogKind::Spawn);
-        assert_eq!(s.text, "hunt bugs");
-        // The failure is timed by its result (`end_ts` = 10:12), not its start
-        // (10:10): at 10:11 it hasn't happened yet, so the spawn still stands.
-        let mid = at("2026-06-05T10:11:00Z");
-        assert_eq!(mid.kind, LogKind::Spawn);
-        let f = at("2026-06-05T10:13:00Z");
-        assert_eq!(f.kind, LogKind::Failure);
-        assert_eq!(f.text, "Bash failed · cargo test");
-        assert_eq!(f.ts, ts("2026-06-05T10:12:00Z"));
-    }
-
-    #[test]
-    fn spawn_event_is_timed_by_birth_not_the_call() {
-        let ts = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
-        let mut m = SessionModel::new("s".into());
-        // Main calls `Agent` at 10:00 (tool_use id "call1").
-        m.agents
-            .get_mut(MAIN_ID)
-            .unwrap()
-            .tool_calls
-            .push_back(ToolCallInfo {
-                id: "call1".into(),
-                name: "Agent".into(),
-                summary: Some("hunt bugs".into()),
-                ts: Some(ts("2026-06-05T10:00:00Z")),
-                end_ts: None,
-                state: ToolState::Ok,
-            });
-        // The subagent it spawned is born (first activity) at 10:02.
-        let mut sub = AgentInfo::new(AgentKind::Subagent);
-        sub.description = Some("hunt bugs".into());
-        sub.first_ts = Some(ts("2026-06-05T10:02:00Z"));
-        m.agents.insert("a1000000000000001".into(), sub);
-        // Its meta joins the call, so the call is NOT a fallback.
-        let metas = std::collections::BTreeSet::from(["call1".to_string()]);
-
-        // Between the call (10:00) and the birth (10:02): the call is suppressed
-        // (its subagent has a meta) and the birth hasn't happened → no spawn yet.
-        assert!(
-            m.latest_event_at(Some(ts("2026-06-05T10:01:00Z")), &metas)
-                .is_none()
-        );
-        // After the birth: the spawn shows, timed by birth (10:02), not the call.
-        let e = m
-            .latest_event_at(Some(ts("2026-06-05T10:03:00Z")), &metas)
-            .expect("a spawn");
-        assert_eq!(e.kind, LogKind::Spawn);
-        assert_eq!(e.text, "hunt bugs");
-        assert_eq!(e.ts, ts("2026-06-05T10:02:00Z"));
     }
 
     #[test]
@@ -1773,6 +1749,7 @@ mod tests {
             id: "b".into(),
             name: "Bash".into(),
             summary: None,
+            intent: None,
             ts: Some(t("2026-06-05T10:00:00.000Z")),
             end_ts: None,
             state: ToolState::Pending,
@@ -1790,6 +1767,7 @@ mod tests {
             id: "c".into(),
             name: "x".into(),
             summary: None,
+            intent: None,
             ts: None,
             end_ts: None,
             state: ToolState::Pending,
@@ -2037,6 +2015,14 @@ mod tests {
     }
 
     #[test]
+    fn cost_is_none_without_records() {
+        let mut m = SessionModel::new("s1".into());
+        assert_eq!(m.agent(MAIN_ID).and_then(|a| a.cost_usd), None);
+        m.apply_update(&assistant_tool_use(Source::Main, "t1", "Bash"));
+        assert_eq!(m.agent(MAIN_ID).unwrap().cost_usd, None);
+    }
+
+    #[test]
     fn duplicate_tool_use_not_double_counted() {
         let mut m = SessionModel::new("s1".into());
         let u = assistant_tool_use(Source::Main, "t1", "Bash");
@@ -2062,5 +2048,146 @@ mod tests {
         // async spawn-ack was superseded by its own activity, or it never got a
         // reliable completion) — settle it to Done rather than leave it "live".
         assert_eq!(m.agent("sub1").unwrap().status, AgentStatus::Done);
+    }
+}
+
+#[cfg(test)]
+mod view_queries {
+    use super::*;
+
+    fn at(s: u32) -> Option<DateTime<Utc>> {
+        Some(chrono::DateTime::from_timestamp(1_780_000_000 + i64::from(s), 0).unwrap())
+    }
+
+    fn say(m: &mut SessionModel, agent: &str, ts: Option<DateTime<Utc>>, kind: FactKind) {
+        m.apply_fact(&Fact {
+            agent: Some(agent.to_string()),
+            ts,
+            kind,
+        });
+    }
+
+    fn start(call: &str, intent: Option<&str>) -> FactKind {
+        FactKind::ToolStart {
+            call: call.into(),
+            name: "bash".into(),
+            summary: Some(format!("{call} summary")),
+            intent: intent.map(str::to_string),
+        }
+    }
+
+    fn spawn(m: &mut SessionModel, id: &str, parent: &str) {
+        say(
+            m,
+            id,
+            at(0),
+            FactKind::Agent {
+                kind: AgentKind::Subagent,
+                parent: Some(parent.into()),
+                agent_type: Some(id.into()),
+                description: None,
+                spawned_by: None,
+                interactive: false,
+            },
+        );
+    }
+
+    /// Codex states a call on its completion record with `ts = started`, so
+    /// two parallel calls can land latest-first; the lane view binary-searches
+    /// by start time and needs them back in order.
+    #[test]
+    fn tool_calls_are_start_ordered() {
+        let mut m = SessionModel::new("s".into());
+        say(&mut m, MAIN_ID, at(30), start("late", None));
+        say(&mut m, MAIN_ID, at(10), start("early", None));
+        say(&mut m, MAIN_ID, at(20), start("middle", None));
+        let main = m.agent(MAIN_ID).unwrap();
+        let order: Vec<&str> = main.tool_calls().map(|c| c.id.as_str()).collect();
+        assert_eq!(order, ["early", "middle", "late"]);
+
+        // The index still finds every call: completing one marks the right row.
+        say(
+            &mut m,
+            MAIN_ID,
+            at(40),
+            FactKind::ToolEnd {
+                call: "late".into(),
+                outcome: Outcome::Err,
+            },
+        );
+        let main = m.agent(MAIN_ID).unwrap();
+        let late = main.tool_calls().find(|c| c.id == "late").unwrap();
+        assert_eq!(late.state, ToolState::Err);
+        assert_eq!(
+            main.tool_calls()
+                .filter(|c| c.state == ToolState::Err)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn tree_order_is_depth_first_in_spawn_order() {
+        let mut m = SessionModel::new("s".into());
+        spawn(&mut m, "a", MAIN_ID);
+        spawn(&mut m, "b", MAIN_ID);
+        spawn(&mut m, "a1", "a");
+        // A parent named before it is seen is a node of its own (the model
+        // creates it), so its child nests under it, not under the root.
+        spawn(&mut m, "orphan", "nowhere");
+        let order = m.tree_order();
+        assert_eq!(
+            order,
+            [
+                (MAIN_ID, 0),
+                ("a", 1),
+                ("a1", 2),
+                ("b", 1),
+                ("nowhere", 1),
+                ("orphan", 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn intent_line_prefers_running_tool_intent() {
+        let mut m = SessionModel::new("s".into());
+        spawn(&mut m, "a", MAIN_ID);
+        // Nothing said yet.
+        assert_eq!(m.intent_line("a"), None);
+        // Last tool summary is the weakest source.
+        say(&mut m, "a", at(1), start("c1", None));
+        say(
+            &mut m,
+            "a",
+            at(2),
+            FactKind::ToolEnd {
+                call: "c1".into(),
+                outcome: Outcome::Ok,
+            },
+        );
+        assert_eq!(m.intent_line("a"), Some("c1 summary"));
+        // Reasoning outranks it, as the one-line excerpt the model keeps.
+        say(
+            &mut m,
+            "a",
+            at(3),
+            FactKind::Reasoning("plan the fix\nthen run".into()),
+        );
+        assert_eq!(m.intent_line("a"), Some("plan the fix then run"));
+        // A running call's own intent outranks everything.
+        say(&mut m, "a", at(4), start("c2", Some("run the tests")));
+        assert_eq!(m.intent_line("a"), Some("run the tests"));
+        // Once it ends, the agent falls back again.
+        say(
+            &mut m,
+            "a",
+            at(5),
+            FactKind::ToolEnd {
+                call: "c2".into(),
+                outcome: Outcome::Ok,
+            },
+        );
+        assert_eq!(m.intent_line("a"), Some("plan the fix then run"));
     }
 }

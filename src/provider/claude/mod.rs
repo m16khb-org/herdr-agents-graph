@@ -206,6 +206,7 @@ pub fn facts(source: &Source, entry: &Entry) -> Vec<Fact> {
                     out.push(about(FactKind::Tokens {
                         output,
                         dedup: e.envelope.request_id.clone(),
+                        cost_usd: None,
                     }));
                 }
                 // Blocks in order: a spawn carries the text nearest above it as
@@ -223,10 +224,12 @@ pub fn facts(source: &Source, entry: &Entry) -> Vec<Fact> {
                             let name = tu.name.clone().unwrap_or_default();
                             let summary =
                                 summarize_tool(&name, &tu.input, e.envelope.cwd.as_deref());
+                            let intent = tool_intent(&name, &tu.input);
                             out.push(about(FactKind::ToolStart {
                                 call: call.clone(),
                                 name: name.clone(),
                                 summary,
+                                intent,
                             }));
                             if is_spawn_tool(&name) {
                                 out.push(about(FactKind::Spawn { call: call.clone() }));
@@ -458,6 +461,20 @@ pub(crate) fn summarize_tool(
     }
 }
 
+/// The agent's stated reason for a call: a spawn's `description`, or a Bash
+/// call's `description`. No other Claude tool names one.
+fn tool_intent(name: &str, input: &serde_json::Value) -> Option<String> {
+    if name == "Bash" || wire::is_spawn_tool(name) {
+        input
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(truncate_summary)
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,5 +545,22 @@ mod tests {
             summarize_tool("Bash", &bash, Some("/proj")).as_deref(),
             Some("cargo test")
         );
+    }
+
+    #[test]
+    fn claude_agent_description_is_intent() {
+        let mut s = Stream::new(Source::Main);
+        let st = s.push(r#"{"type":"assistant","uuid":"u1","parentUuid":null,"timestamp":"2026-06-05T13:51:15.151Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"a1","name":"Agent","input":{"description":"hunt bugs","subagent_type":"explorer"}},{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls","description":"List files"}},{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/x","description":"nope"}}]}}"#).unwrap();
+        let intent = |call: &str| {
+            st.facts.iter().find_map(|f| match &f.kind {
+                FactKind::ToolStart {
+                    call: c, intent, ..
+                } if c == call => Some(intent.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(intent("a1"), Some(Some("hunt bugs".to_string())));
+        assert_eq!(intent("b1"), Some(Some("List files".to_string())));
+        assert_eq!(intent("r1"), Some(None));
     }
 }

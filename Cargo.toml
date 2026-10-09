@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "development-tools", "visualization"]
 # An allow-list, not a deny-list: state what the crate ships and everything else
 # stays out by default. Nothing under `assets/` is compiled in; the fixtures there
 # are read by tests only. Cargo adds Cargo.toml and Cargo.lock on its own.
-include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/NOTICE"]
+include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/NOTICE", "/design/seed/LICENSE", "/design/seed/NOTICE"]
 
 [features]
 default = ["native"]
@@ -31,6 +31,7 @@ native = [
   "dep:anyhow",
   "ratatui/crossterm",
   "rataflow/crossterm",
+  "dep:terminal-colorsaurus",
 ]
 
 [dependencies]
@@ -67,6 +68,8 @@ tokio = { version = "1", features = [
 ], optional = true }
 futures = { version = "0.3", optional = true }
 anyhow = { version = "1", optional = true }
+# Terminal background query (OSC 11) for light/dark detection; unix/windows tty only.
+terminal-colorsaurus = { version = "1.0", optional = true }
 # Persistent collections: cloning a `SessionModel` shares structure instead of
 # copying it, which is what makes a snapshot ladder rung O(1).
 imbl = "7.0.1"
@@ -89,6 +92,8 @@ required-features = ["native"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
+# Parses the vendored SEED YAML in the token generator test (src/ui/seed/gen.rs).
+yaml-rust2 = "0.13"
 
 # Baselines for the parse -> timeline -> fold -> seek pipeline, over synthetic
 # sessions (benches/common).

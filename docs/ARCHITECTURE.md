@@ -141,7 +141,7 @@ them is the single most common bug we hit this session.
 | Also called | `cursor`, the playhead, "now-reference" | watch-time |
 | Advances by | the session's own timestamps | real seconds, **only while playing** |
 | Frozen when | never — it *is* the position | paused, scrubbed, or off the live edge |
-| Governs | folding, liveness, pending state, dating, run **grouping** | animation: camera glide, chip **afterglow**, marching ants |
+| Governs | folding, liveness, pending state, dating, in-flight tool timers | animation: camera glide, marching ants, the status flash, the snackbar |
 | Question it answers | "what is *true* at this moment of the session?" | "how long have *I been watching* this?" |
 
 Two rules fall out, and they are the spine of the whole UI:
@@ -156,8 +156,9 @@ Two rules fall out, and they are the spine of the whole UI:
 
 The failures this prevents, both of which we lived through:
 
-- **Aging state in wall-time** → a chip's fade racing gap-compression, flickering
-  as the playhead jumps. (Fixed by making the afterglow watch-time.)
+- **Aging state in wall-time** → a fade racing gap-compression, flickering as the
+  playhead jumps. The only wall-time UI state is the status flash and the
+  snackbar (§5); everything else on screen is derived from the model each frame.
 - **Deriving state from a static/final record that folds early** → the
   `meta.stoppedByUser` bug: a *final* flag applied at the *start* of replay marked
   agents "stopped" for the whole session. **Time comes from timestamped events,
@@ -183,7 +184,7 @@ completion but isn't:
 - The **`Agent` tool result is a spawn acknowledgment** — literally
   `"Async agent launched successfully"` — **NOT** a completion. The subagent then
   runs for minutes in its own sidechain transcript. Marking it done at the ack was
-  the root cause of the entire chip-flicker saga.
+  the root cause of in-flight indicators vanishing while a subagent still ran.
 - Likewise a **`Workflow` tool result** is `"Workflow launched in background…"` —
   a launch ack, never a completion. Workflow groups roll up from children instead.
 
@@ -211,7 +212,7 @@ strictly stronger than any "no output for N seconds" inference. This is the less
 of the 2m22s `Bash`: the subagent produced no transcript output for 143s, the
 quiet-time heuristic declared it "Done," and its in-flight indicator vanished —
 and when the tool finally **errored**, that error was never shown, because the run
-had already been written off as history. Both liveness (§4) and chips (§5) now
+had already been written off as history. Both liveness (§4) and the in-flight rows (§5)
 read the pending tool_call as the working signal it is.
 
 ---
@@ -233,8 +234,8 @@ test** for whether such a heuristic is legitimate:
 | **Undated-item dating** | `Timing` enum, `date_and_sort` (tailer) | Timestamps/order for **records that carry none** (Claude's sidecars and ledgers) | ✅ **Legit.** A real gap (the data genuinely has no timestamp); dated relative to dated neighbours / a leader; guarded by an order-independence property test. |
 | **Prompt / era attribution** | `prompt_for_ts`, era derivation | Which prompt-era an agent or entry belongs to | ✅ **Legit.** A pure function of recorded timestamps, cross-source-arrival-order independent. No "belongs to prompt X" field exists. |
 
-**Not this class — presentation thresholds.** `RUN_GAP` (chip grouping),
-`GAP_MARKER_SECS` (gap markers), `LIVE_FRESH` (live-dot), `GLIDE_SECS` (camera),
+**Not this class — presentation thresholds.** `SLOW_TOOL` (the hint bar's slow-tool count),
+`GAP_MARKER_SECS` (gap markers), `LIVE_FRESH` (the live badge), `GLIDE_SECS` (camera),
 `POLL_INTERVAL` (tailer). These derive *how things look/pace*, not model state.
 Being "wrong" here tweaks a pixel or a cadence; it can never mislabel an agent or
 hide an error. They are held to a comfort standard, not a correctness one.
@@ -267,48 +268,45 @@ over; activity is provably absent). A live stream never fires it.
 
 ---
 
-## 5. The chip system — a case study in the two clocks
+## 5. In-flight tools — the two clocks without aging state
 
-Chips are the ephemeral `⚒ bash ×5` overlays under agent cards. They are the
-cleanest worked example of §1.2, and were rebuilt this session into a **single
-reconcile pass**.
+What a tool is doing right now is the most visible time-varying quantity on
+screen, and the cleanest worked example of §1.2. It is kept as **content**, with
+no state of its own between frames.
 
-**A chip is a *run*** — a maximal group of consecutive same-name tool calls
-(`⚒ read ×N`), a range `[start, start+count)` into an agent's `tool_calls`.
-Aggregation is what stops a busy agent from churning chips through the per-agent
-cap: a burst of 20 reads is one counting chip, not 20 that flash past.
+**One derivation each frame — `SessionModel::in_flight`.** It yields every
+`Pending` tool call of every agent that is not `terminal`. The Now view shows an
+agent's in-flight call with a running timer, and the hint bar counts the calls
+past `SLOW_TOOL` (30 s). Nothing remembers a call from one frame to the next, so
+there is nothing to reset: attaching, seeking in either direction, or rebuilding
+the model re-derives the same rows from the facts at the playhead.
 
-**One derivation each frame — `ChipTray::reconcile(dt, playing, model)`.** It
-rebuilds the whole tray from model state, carrying afterglows across the rebuild
-by run identity `(agent, start)`. The design splits cleanly along the two clocks:
+The split along the two clocks:
 
-- **Grouping is content** — a pure function of the calls' own **timestamps**
-  (`within_gap`, `RUN_GAP`). Because it never consults animation history, the
-  grouping is *identical on forward playback and on a seek* — which is precisely
-  what let the old two paths (`observe` + `seed`) collapse into one.
-- **The afterglow is presentation** — a fade that ages in **watch-time**, anchored
-  when a run settles, re-anchored bright when a run gains a member (so a long burst
-  doesn't sawtooth-fade mid-stream). Forward-only; not replayed on a seek.
-- **Pending is content** — a run with any in-flight call shows bright and is
-  **reconstructed at any playhead inside its interval**, however you scrubbed
-  there. On attach/seek, `adopt_baseline` moves the `seen` mark to the end
-  (absorbing completed history silently) and the next `reconcile` re-derives the
-  in-flight runs from state.
+- **Pending is content.** A call is in flight at any playhead inside its
+  interval, however the playhead got there.
+- **Timers are measured against `now_reference`** (§4): wall clock at a live
+  edge, the playhead otherwise. A paused or scrubbed view therefore shows as-of-
+  then durations and its timers stand still; a replay does not mix its recorded
+  timestamps with the wall clock. The timer is a pure function of the call's
+  start and the reference.
+- **No wall-time aging state.** A finished call is its state glyph in the
+  detail's tool list, not a fading overlay, so there is no TTL, no grouping
+  window and no seen-mark to keep consistent with gap-compression.
 
-**Two invariants worth their own line:**
+**Owner-liveness is `terminal`-gated.** `in_flight` skips only agents that are
+*authoritatively* finished — **not** those on the reversible 120s-quiet `Done`
+(§2.2). This is what keeps a long tool visible until it settles into its ✓/✗
+instead of vanishing.
 
-- `RUN_GAP == CHIP_TTL` (2.5s). Once a run has been quiet long enough to fade, the
-  next same-name call is also beyond the gap — so it opens a *fresh* run instead of
-  **resurrecting** the faded one.
-- **`seen` is the born-completed / history discriminator.** A completed run past
-  the mark is new work (flash it); one below the mark is history a seek absorbed
-  (don't). It is the one genuinely irreducible bit of memory — everything else is a
-  pure function of state.
-
-**Owner-liveness is `terminal`-gated.** A pending chip persists until its owner is
-*authoritatively* finished — **not** on the reversible 120s-quiet `Done` (§2.2).
-This is what keeps a long tool's chip alive to settle into its ✓/✗ instead of
-vanishing.
+**What does age in wall time.** Exactly two things, both on `App.clock` (the
+loop's `tick_clock`) and both presentation only: the 150 ms status **flash**
+(`FLASH_FOR`) that emphasises agents whose status just changed, and the 3 s
+**snackbar** (`SNACK_FOR`). A seek sets no flash. The camera glide
+(`GLIDE_SECS` 0.3) and the marching-ants phase are animation clocks too; they
+run only while the picture moves. The redraw gate (`FrameStamp`, DESIGN.md) names
+every one of these time-driven parts, so each is repainted when it changes and
+a quiet session stops repainting.
 
 ---
 
@@ -326,9 +324,10 @@ Detailed in [`DESIGN.md`](DESIGN.md#timeline); the architectural essence:
   flat cap — a 5-min wait still reads longer than a 5-sec one; `s` toggles faithful
   pacing); at the edge it pins. So `space` resumes from the playhead in both modes,
   and a scrubbed-back live session catches up then follows.
-- **The scrubber is event-indexed, not time-linear** — real sessions cluster work
-  then idle for hours, so a time-linear bar buries the action in a sliver. The
-  track is a tool-activity sparkline over event ranges.
+- **Playhead position is event-indexed, not time-linear** — real sessions cluster
+  work then idle for hours, so a time-linear fraction buries the action in a
+  sliver (`progress` / `fold_at_fraction`). The Lanes view draws time and folds
+  idle stretches into `┆12m┆` markers instead.
 - **Transport is emergent** (`Live`/`Playing`/`Paused`/`History`/`Idle`), read from
   edge-following + append freshness — never a hardcoded mode.
 
@@ -345,9 +344,6 @@ Honest ledger of what's derived-but-imperfect, for whoever touches this next:
   principled fix: don't default a zero-activity async agent to terminal; let
   time-derived liveness own it until real evidence arrives. Left documented, not
   yet changed.
-- **Aggregate chip error-coloring.** A settled run shows a single aggregate
-  ✓/✗; a run of N where only one call failed still reads as an error run. Cosmetic
-  over-alarm, noted for a future pass.
 
 ---
 
