@@ -48,17 +48,29 @@ same way whichever agent wrote it.
 
 ## The screen
 
-The top bar names the agent and the session and says whether it is live,
-replaying or paused, how long it has run, how many output tokens it has
-written, and — for omp, which records it — what it has cost. The bar at the
-bottom counts what needs attention (failed agents, tools running for more than
-30 s) and lists the keys that work in the current view.
+The top bar names the agent and the session and says where playback is
+(`◉ live`, `▶ replay`, `⏸ paused`, `⏮ past`, or `◦ quiet` when nothing new has
+arrived), how long it has run, how many output tokens it has written, and —
+for omp, which records it — what it has cost. Those words and glyphs are never
+an agent's, so a quiet session with an `● active` agent does not read as a
+contradiction. The bar at the bottom counts what needs attention (failed
+agents, tools running for more than 30 s) and lists the keys that work in the
+current view.
 
 | View | Key | What it shows |
 | --- | --- | --- |
-| Now (default) | `1` | One row per agent, as a tree: its status, what it is doing (the running tool's stated intent, else its task, else its latest thought), the tool in flight with its timer, and its tokens. Failures rise to the top. `enter` lists the selected agent's last five tool calls. |
+| Now | `1` | One row per agent, as a tree: its status, what it is doing (the running tool's stated intent, else its task, else its latest thought), the tool in flight with its timer, and its tokens. Failures rise to the top. `enter` lists the selected agent's last five tool calls. |
 | Lanes | `2` | One lane per agent along time; every tool call is a bar coloured by its result. Long idle stretches fold to `┆12m┆` (`z` unfolds them), and `←` `→` move the cursor. |
-| Graph | `3` | The spawn tree on a canvas you can pan and zoom. |
+| Graph (default) | `3` | The spawn tree on a canvas you can pan and zoom, framed whole when it opens. The `map` in the top-right corner shows the whole graph at one scale; its frame is the part on screen. |
+
+agents-graph opens on the graph, so the Herdr key (`prefix+shift+z`) shows the
+spawn tree straight away.
+
+When two or more subagents of the same parent are done for good (they
+reported their end, or the replay is over), the Now view shows them as one
+row and the graph as one card, `✓ 3 done`, naming them. Select it and press
+`enter` to unfold it; `esc` on one of its agents folds them again. The lanes
+always show every agent.
 
 From 100 columns the Now view keeps the selected agent's detail open on the
 right: the prompt and the thought that led to its spawn, and every tool call
@@ -77,7 +89,7 @@ each agent's glyph.
 | --- | --- |
 | `tab`, `shift-tab`, `1` `2` `3` | switch view |
 | `j` `k`, `↓` `↑` | select the next or previous agent (scroll inside a full-size detail) |
-| `enter`, `esc` | expand the row, then open its detail; go back |
+| `enter`, `esc` | unfold done agents, expand the row, then open its detail; go back, fold them again |
 | `space` | play or pause |
 | `[` `]` | previous or next prompt |
 | `G`, `g`, `end` | back to live |
@@ -100,6 +112,17 @@ Changed from 0.1.0:
 | `↑` `↓` | move between graph nodes by position | select the next or previous agent |
 | vertical pan | `j` `k` | `J` `K` |
 | `o`, `r`, `s`, `i` | shown in the status bar | unchanged, listed under `?` only |
+
+Changed from 0.2.0:
+
+| What | 0.2.0 | Now |
+| --- | --- | --- |
+| first view | Now | Graph |
+| top bar when nothing new arrives | `■ idle` | `◦ quiet` (and `◉ live` for live) |
+| done subagents | one row and one card each | two or more under one parent fold into `✓ N done`; `enter` unfolds, `esc` folds |
+| minimap | rescaled with every zoom and pan | the whole graph at one scale, with a frame for what is on screen |
+| omp subagent row | its latest thought | the first line of its task |
+| tool count | `1 tools` | `1 tool` |
 
 ## Colours
 

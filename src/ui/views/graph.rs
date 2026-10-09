@@ -1,14 +1,14 @@
 //! The graph view: the spawn tree on rataflow's pannable canvas, with agent
-//! cards and parent edges drawn from SEED tokens.
+//! cards and parent edges drawn from SEED tokens, and a minimap.
 //!
-//! The canvas, its background pattern and the minimap take their colors from
-//! the rataflow palette, which this view rebuilds from the theme on every
+//! The canvas and its background pattern take their colors from the
+//! rataflow palette, which this view rebuilds from the theme on every
 //! frame; cards and edges recover the full theme from that palette
 //! ([`Theme::from_palette`]) so they can use every status tone.
 
 use rataflow::{
-    Background, EdgeContent, EdgePathContext, EdgeRenderContext, EdgeStyle, MiniMap,
-    MiniMapPosition, NodeContent, NodeRenderContext, Path,
+    Background, EdgeContent, EdgePathContext, EdgeRenderContext, EdgeStyle, NodeContent,
+    NodeRenderContext, Path,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -20,9 +20,10 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget};
 use crate::state::App;
 use crate::state::graph::{AgentEdge, AgentNode};
 use crate::state::session::{AgentStatus, status_word};
+use crate::state::view::fold_card_id;
 use crate::ui::seed::theme::{Depth, Mode, Theme, Tone, status_tone};
 use crate::ui::seed::tokens::{brand, fg, stroke};
-use crate::ui::text::{fmt_tokens, truncate, width};
+use crate::ui::text::{fmt_tokens, fmt_tool_count, truncate, width};
 
 /// Below this on-screen size a card has no room for text: it renders as a
 /// cell of its status tone instead (semantic zoom).
@@ -44,8 +45,13 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
     app.hit.canvas = Some(area);
     app.flow.theme = rataflow::Theme::Custom(theme.palette());
 
-    // The flow keeps its own selection; make it show the app's.
-    let want = app.selection.agent.clone();
+    // The flow keeps its own selection; make it show the app's, a fold by
+    // its card.
+    let want = match (&app.selection.agent, &app.selection.folded) {
+        (Some(id), _) => Some(id.clone()),
+        (None, Some(parent)) => Some(fold_card_id(parent)),
+        (None, None) => None,
+    };
     let have = app.flow.selected_nodes().next().map(|n| n.id.clone());
     if want != have {
         match want.as_deref() {
@@ -55,8 +61,8 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
         }
     }
 
-    // Three passes: the background and minimap read the flow, the canvas
-    // renders through `&mut Flow`; the borrows must not overlap.
+    // Background and canvas: the pattern reads the flow, the canvas renders
+    // through `&mut Flow`; the borrows must not overlap.
     frame.render_widget(Background::new(&app.flow), area);
     frame.render_widget(&mut app.flow, area);
     // A selection made elsewhere is centered here, after the canvas has its
@@ -64,9 +70,13 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
     if let Some(id) = app.pending_center.take() {
         app.center_node(&id, false);
     }
-    frame.render_widget(
-        MiniMap::new(&app.flow).position(MiniMapPosition::TopRight),
+    let selected = app.flow.selected_nodes().next().map(|n| n.id.clone());
+    super::minimap::render(
+        frame.buffer_mut(),
         area,
+        &app.flow,
+        selected.as_deref(),
+        theme,
     );
 }
 
@@ -142,15 +152,16 @@ impl NodeContent for AgentNode {
                 surface.patch(theme.fg(fg::NEUTRAL_MUTED)),
             )));
         }
+        let count = fmt_tool_count(self.tool_count);
         let tools = match self.last_tool.as_deref() {
             Some(last) => {
-                let prefix = format!("{} tools · ", self.tool_count);
+                let prefix = format!("{count} · ");
                 format!(
                     "{prefix}{}",
                     truncate(last, w.saturating_sub(width(&prefix)))
                 )
             }
-            None => format!("{} tools", self.tool_count),
+            None => count,
         };
         lines.push(Line::from(Span::styled(
             tools,

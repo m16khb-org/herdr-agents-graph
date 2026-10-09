@@ -367,6 +367,8 @@ mod tests {
                 vec![pending("t1")],
             ),
         ]);
+        // The Now view: its only clock is the running tool's elapsed time.
+        app.set_view(View::Now);
         app.status_tick();
         assert_ne!(
             app.session.agent(MAIN_ID).unwrap().status,
@@ -472,6 +474,7 @@ mod tests {
     #[test]
     fn in_motion_only_while_something_moves() {
         let mut app = finished();
+        app.set_view(View::Now);
         let now = app.clock;
         assert!(!app.in_motion(now), "a finished session holds still");
 

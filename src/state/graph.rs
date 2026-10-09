@@ -3,12 +3,18 @@
 //! Never rebuilds: per agent, either mutate the existing node content in place
 //! via `node_content_mut`, or `add_node` + `add_edge` (duplicate-id `Err` is an
 //! idempotent no-op). Nodes are added before their edges. A structural change
-//! (node/edge added) marks layout dirty; at sync end we run Sugiyama. Selection
-//! survives because node ids are stable and we never clear-and-re-add.
+//! (node/edge added or removed) marks layout dirty; at sync end we run
+//! Sugiyama. Selection survives because node ids are stable and we never
+//! clear-and-re-add. Folded agents leave the canvas for one card per fold,
+//! and come back where they were.
 
+use std::collections::HashMap;
+
+use rataflow::types::Position;
 use rataflow::{Edge, Flow, Handle, HandlePosition, Node, Reconnectable, StepEdge, Sugiyama};
 
 use super::session::{AgentInfo, AgentKind, AgentStatus, SessionModel};
+use super::view::{FoldSet, fold_card_id, fold_of_card};
 
 /// Fixed card dimensions for main / workflow nodes (world units).
 pub const MAIN_NODE_DIMS: (f64, f64) = (30.0, 7.0);
@@ -103,28 +109,114 @@ fn build_content(info: &AgentInfo) -> AgentNode {
     }
 }
 
+/// The card a fold shows: how many are done and who, and their calls and
+/// tokens summed.
+fn fold_content(model: &SessionModel, members: &[String]) -> AgentNode {
+    let agents = || members.iter().filter_map(|id| model.agent(id));
+    let names: Vec<&str> = agents().map(AgentInfo::display_name).collect();
+    AgentNode {
+        title: format!("{} done", members.len()),
+        description: Some(names.join(", ")),
+        status: AgentStatus::Done,
+        tool_count: agents().map(|a| a.tool_calls.len()).sum(),
+        last_tool: None,
+        output_tokens: agents().fold(0u64, |sum, a| sum.saturating_add(a.output_tokens)),
+        interactive: false,
+    }
+}
+
+/// A read-only card: selectable (detail panel) and draggable (manual
+/// arrangement), but never deletable and never a connection source.
+/// Enforced at the DTO level, not just the key whitelist, so no input path
+/// can mutate the graph.
+fn card(id: String, pos: (f64, f64), dims: (f64, f64), content: AgentNode) -> Node<AgentNode> {
+    Node::new(id, pos, dims, content)
+        .with_deletable(false)
+        .with_connectable(false)
+        .with_handles(vec![
+            Handle::source(HandlePosition::Bottom).with_hidden(true),
+            Handle::target(HandlePosition::Top).with_hidden(true),
+        ])
+}
+
 /// Horizontal gap between locally-placed siblings (world units).
 const LOCAL_H_GAP: f64 = 4.0;
 /// Vertical gap below a parent for locally-placed children (world units).
 const LOCAL_V_GAP: f64 = 5.0;
 
-/// Incrementally sync `flow` to `model`.
+/// Local placement for a new `w`-wide card of agent `id`: below its parent,
+/// fanned past the siblings spawned before it; `(0, 0)` when the parent is not
+/// on the canvas. The sibling index is computed only for the rare new node, so
+/// the no-new-nodes steady state skips it entirely.
+fn local_position(flow: &AgentFlow, model: &SessionModel, id: &str, w: f64) -> (f64, f64) {
+    let Some(parent) = model.agent(id).and_then(|a| a.parent.as_deref()) else {
+        return (0.0, 0.0);
+    };
+    let Some(node) = flow.node(parent) else {
+        return (0.0, 0.0);
+    };
+    let siblings = model
+        .spawn_order
+        .iter()
+        .take_while(|x| x.as_str() != id)
+        .filter(|x| model.agent(x).and_then(|a| a.parent.as_deref()) == Some(parent))
+        .count();
+    (
+        node.position.x + siblings as f64 * (w + LOCAL_H_GAP),
+        node.position.y + node.height + LOCAL_V_GAP,
+    )
+}
+
+/// Incrementally sync `flow` to `model`, with `folds` folded away.
 ///
 /// For each agent in spawn order: mutate the existing node content in place, or
 /// add the node (then its parent edge). Updates edge `animated` from target
 /// status. New nodes get LOCAL placement (below their parent, offset past
 /// siblings) so they land somewhere sensible even without a relayout.
 ///
+/// A folded agent's node leaves the canvas, its position kept in `parked`,
+/// and each fold gets one card in its first member's place. An agent that
+/// comes back out of a fold returns to its parked position, so folding and
+/// seeking never undo where the user dragged a card.
+///
 /// When `relayout` is true, any structural change ends with a full
 /// `Sugiyama::vertical()` pass (which overwrites the local placements). When
 /// false — Manual camera: the user owns the view — nothing existing moves;
 /// the caller tracks dirtiness and relayouts when the camera re-engages.
 /// Returns `true` if structure changed.
-pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool {
+pub fn sync(
+    flow: &mut AgentFlow,
+    model: &SessionModel,
+    folds: &FoldSet,
+    parked: &mut HashMap<String, Position>,
+    relayout: bool,
+) -> bool {
     let mut structural = false;
+
+    // Take folded agents and stale fold cards off the canvas first, parking
+    // the agents' positions: a new fold card takes its first member's place.
+    let leaving = |id: &str| match fold_of_card(id) {
+        Some(parent) => !folds.by_parent.contains_key(parent),
+        None => folds.member_of.contains_key(id),
+    };
+    if flow.nodes().any(|n| leaving(&n.id)) {
+        flow.retain_nodes(|n| {
+            if !leaving(&n.id) {
+                return true;
+            }
+            if fold_of_card(&n.id).is_none() {
+                parked.insert(n.id.clone(), n.position);
+            }
+            false
+        });
+        structural = true;
+    }
 
     // First pass: nodes (must exist before their edges).
     for id in &model.spawn_order {
+        if folds.member_of.contains_key(id) {
+            continue;
+        }
         let Some(info) = model.agent(id) else {
             continue;
         };
@@ -136,89 +228,61 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
                 *existing = build_content(info);
             }
         } else {
-            // Sibling index for local placement — computed only for the rare
-            // new node; the no-new-nodes steady state skips it entirely.
-            let siblings = info
-                .parent
-                .as_deref()
-                .map(|p| {
-                    model
-                        .spawn_order
-                        .iter()
-                        .take_while(|x| *x != id)
-                        .filter(|x| model.agent(x).and_then(|a| a.parent.as_deref()) == Some(p))
-                        .count()
-                })
-                .unwrap_or(0);
-            let content = build_content(info);
             let (w, h) = node_dims(info.kind);
-            // Local placement: below the parent, fanned past prior siblings.
-            // Overwritten by Sugiyama when `relayout` runs; kept verbatim in
-            // Manual so existing nodes never move underneath the user.
-            let pos = info
-                .parent
-                .as_deref()
-                .and_then(|p| flow.node(p))
-                .map(|parent| {
-                    (
-                        parent.position.x + siblings as f64 * (w + LOCAL_H_GAP),
-                        parent.position.y + parent.height + LOCAL_V_GAP,
-                    )
-                })
-                .unwrap_or((0.0, 0.0));
-            // Read-only monitor: nodes are selectable (detail panel) and
-            // draggable (manual arrangement) — but never deletable and never
-            // connection sources. Enforced at the DTO level, not just the key
-            // whitelist, so no input path can mutate the graph.
-            let node = Node::new(id.clone(), pos, (w, h), content)
-                .with_deletable(false)
-                .with_connectable(false)
-                .with_handles(vec![
-                    Handle::source(HandlePosition::Bottom).with_hidden(true),
-                    Handle::target(HandlePosition::Top).with_hidden(true),
-                ]);
+            // Back where it was before a fold took it; else local placement:
+            // below the parent, fanned past prior siblings. Overwritten by
+            // Sugiyama when `relayout` runs; kept verbatim in Manual so
+            // existing nodes never move underneath the user.
+            let pos = match parked.remove(id) {
+                Some(p) => (p.x, p.y),
+                None => local_position(flow, model, id, w),
+            };
             // Duplicate-id is an idempotent no-op; a genuine add is structural.
-            if flow.add_node(node).is_ok() {
+            if flow
+                .add_node(card(id.clone(), pos, (w, h), build_content(info)))
+                .is_ok()
+            {
+                structural = true;
+            }
+        }
+    }
+    for (parent, members) in &folds.by_parent {
+        let id = fold_card_id(parent);
+        let content = fold_content(model, members);
+        if let Some(existing) = flow.node_content_mut(&id) {
+            *existing = content;
+        } else {
+            // The first member's parked place; a fold formed before any
+            // member reached the canvas (a live session's first read) takes
+            // the place the first member would have had.
+            let pos = members.first().map_or((0.0, 0.0), |m| {
+                parked.get(m).map_or_else(
+                    || local_position(flow, model, m, SUB_NODE_DIMS.0),
+                    |p| (p.x, p.y),
+                )
+            });
+            if flow.add_node(card(id, pos, SUB_NODE_DIMS, content)).is_ok() {
                 structural = true;
             }
         }
     }
 
-    // Second pass: edges from each agent to its parent.
+    // Second pass: edges from each shown agent, and each fold card, to its
+    // parent.
     for id in &model.spawn_order {
+        if folds.member_of.contains_key(id) {
+            continue;
+        }
         let Some(info) = model.agent(id) else {
             continue;
         };
         let Some(parent) = &info.parent else {
             continue;
         };
-        let animated = info.status == AgentStatus::Running;
-        let edge_id = edge_id(id);
-        // Edge already present (the steady state on every sync): just refresh
-        // animation — probing via `edge_content_mut` first avoids building a
-        // throwaway Edge (three String clones) per agent per sync only for
-        // `add_edge` to reject it as a duplicate. Edges carry no selectable
-        // meaning here (no edge panel), and a stray edge click would pin
-        // Follow mode while closing the node panel — a dead state. Fully inert:
-        // not selectable, deletable, or reconnectable. Liveness shows as the
-        // running color + marching ants, NOT a label — the current tool already
-        // shows in the child's chips and detail panel.
-        if let Some(content) = flow.edge_content_mut(&edge_id) {
-            content.running = animated;
-            flow.set_edge_animated(&edge_id, animated);
-        } else {
-            let edge = Edge::new(edge_id.clone(), parent.clone(), id.clone())
-                .with_animated(animated)
-                .with_selectable(false)
-                .with_deletable(false)
-                .with_reconnectable(Reconnectable::None);
-            if flow.add_edge(edge).is_ok() {
-                structural = true;
-            }
-            if let Some(content) = flow.edge_content_mut(&edge_id) {
-                content.running = animated;
-            }
-        }
+        structural |= upsert_edge(flow, id, parent, info.status == AgentStatus::Running);
+    }
+    for parent in folds.by_parent.keys() {
+        structural |= upsert_edge(flow, &fold_card_id(parent), parent, false);
     }
 
     if structural && relayout {
@@ -227,13 +291,43 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
     structural
 }
 
+/// Add `child`'s parent edge, or refresh its animation when it exists.
+/// Returns whether an edge was added.
+fn upsert_edge(flow: &mut AgentFlow, child: &str, parent: &str, animated: bool) -> bool {
+    let edge_id = edge_id(child);
+    // Edge already present (the steady state on every sync): just refresh
+    // animation — probing via `edge_content_mut` first avoids building a
+    // throwaway Edge (three String clones) per agent per sync only for
+    // `add_edge` to reject it as a duplicate. Edges carry no selectable
+    // meaning here (no edge panel), and a stray edge click would pin
+    // Follow mode while closing the node panel — a dead state. Fully inert:
+    // not selectable, deletable, or reconnectable. Liveness shows as the
+    // running color + marching ants, NOT a label — the current tool already
+    // shows in the child's chips and detail panel.
+    if let Some(content) = flow.edge_content_mut(&edge_id) {
+        content.running = animated;
+        flow.set_edge_animated(&edge_id, animated);
+        return false;
+    }
+    let edge = Edge::new(edge_id.clone(), parent.to_string(), child.to_string())
+        .with_animated(animated)
+        .with_selectable(false)
+        .with_deletable(false)
+        .with_reconnectable(Reconnectable::None);
+    let added = flow.add_edge(edge).is_ok();
+    if let Some(content) = flow.edge_content_mut(&edge_id) {
+        content.running = animated;
+    }
+    added
+}
+
 /// Stable id for the (single) parent edge of `child`.
 ///
-/// Keyed by the child alone: every agent has exactly one parent edge, and
-/// `sync` never removes edges — so the id must never change once created.
-/// Keying on `spawned_by` or the parent would orphan a stale edge if
-/// either field were filled in after the edge existed (latent today, armed by
-/// any future meta re-emission).
+/// Keyed by the child alone: every agent has exactly one parent edge, so the
+/// id must never change once created. Keying on `spawned_by` or the parent
+/// would orphan a stale edge if either field were filled in after the edge
+/// existed (latent today, armed by any future meta re-emission). An edge
+/// leaves only with its child's node.
 fn edge_id(child: &str) -> String {
     format!("e-{child}")
 }
@@ -265,6 +359,17 @@ mod tests {
     use super::*;
     use crate::provider::claude::wire::SubagentMeta;
 
+    /// `sync` with nothing folded.
+    fn sync_all(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool {
+        sync(
+            flow,
+            model,
+            &FoldSet::default(),
+            &mut HashMap::new(),
+            relayout,
+        )
+    }
+
     /// A model with main + one direct subagent (running).
     fn model_with_subagent() -> SessionModel {
         let mut m = SessionModel::new("s1".into());
@@ -295,7 +400,7 @@ mod tests {
     fn sync_creates_nodes_and_edge() {
         let model = model_with_subagent();
         let mut flow = new_flow();
-        let structural = sync(&mut flow, &model, true);
+        let structural = sync_all(&mut flow, &model, true);
         assert!(structural);
         assert!(flow.node_content_mut("main").is_some());
         assert!(flow.node_content_mut("abc123").is_some());
@@ -307,13 +412,13 @@ mod tests {
     fn sync_idempotent() {
         let model = model_with_subagent();
         let mut flow = new_flow();
-        let first = sync(&mut flow, &model, true);
+        let first = sync_all(&mut flow, &model, true);
         assert!(first);
         let node_count = flow.nodes().count();
         let edge_count = flow.edges().len();
 
         // Applying the same model again adds nothing structural.
-        let second = sync(&mut flow, &model, true);
+        let second = sync_all(&mut flow, &model, true);
         assert!(!second);
         assert_eq!(flow.nodes().count(), node_count);
         assert_eq!(flow.edges().len(), edge_count);
@@ -323,7 +428,7 @@ mod tests {
     fn sync_preserves_selection() {
         let model = model_with_subagent();
         let mut flow = new_flow();
-        sync(&mut flow, &model, true);
+        sync_all(&mut flow, &model, true);
         flow.select_node("abc123");
         assert_eq!(
             flow.selected_nodes().next().map(|n| n.id.clone()),
@@ -335,7 +440,7 @@ mod tests {
         if let Some(a) = model2.agents.get_mut("abc123") {
             a.output_tokens += 100;
         }
-        sync(&mut flow, &model2, true);
+        sync_all(&mut flow, &model2, true);
         assert_eq!(
             flow.selected_nodes().next().map(|n| n.id.clone()),
             Some("abc123".to_string())
@@ -346,7 +451,7 @@ mod tests {
     fn edge_animation_follows_status() {
         let mut model = model_with_subagent();
         let mut flow = new_flow();
-        sync(&mut flow, &model, true);
+        sync_all(&mut flow, &model, true);
         // Running subagent -> animated edge.
         let edge_id = edge_id("abc123");
         let animated = flow
@@ -363,7 +468,7 @@ mod tests {
         if let Some(a) = model.agents.get_mut("abc123") {
             a.status = AgentStatus::Done;
         }
-        sync(&mut flow, &model, true);
+        sync_all(&mut flow, &model, true);
         let animated = flow
             .edges()
             .iter()
@@ -379,7 +484,7 @@ mod tests {
 
         let model = model_with_subagent();
         let mut flow = new_flow();
-        sync(&mut flow, &model, true);
+        sync_all(&mut flow, &model, true);
 
         for node in flow.nodes() {
             assert!(node.selectable, "nodes stay selectable (detail panel)");
@@ -399,7 +504,7 @@ mod tests {
         let mut model = model_with_subagent();
         let mut flow = new_flow();
         // Initial layout (camera engaged).
-        sync(&mut flow, &model, true);
+        sync_all(&mut flow, &model, true);
         let main_pos = flow.node("main").unwrap().position;
         let first_sub = flow.node("abc123").unwrap().position;
 
@@ -411,7 +516,7 @@ mod tests {
             stopped_by_user: None,
         };
         model.apply_meta("def456", None, &meta2);
-        let structural = sync(&mut flow, &model, false);
+        let structural = sync_all(&mut flow, &model, false);
         assert!(structural);
 
         // Nothing existing moved...
@@ -431,7 +536,7 @@ mod tests {
 
         let model = model_with_subagent();
         let mut flow = new_flow();
-        sync(&mut flow, &model, true);
+        sync_all(&mut flow, &model, true);
         flow.request_fit_view();
 
         let area = Rect::new(0, 0, 100, 30);

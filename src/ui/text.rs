@@ -143,6 +143,15 @@ pub(crate) fn fmt_tokens(n: u64) -> String {
     }
 }
 
+/// A tool-call count with its noun: `1 tool`, `0 tools`, `12 tools`.
+pub(crate) fn fmt_tool_count(n: usize) -> String {
+    if n == 1 {
+        "1 tool".to_string()
+    } else {
+        format!("{n} tools")
+    }
+}
+
 /// Compact duration at whole-second resolution: `12s`, `2m03s`, `1h05m`.
 /// The resolution matches the redraw stamp: a timer changes once a second.
 pub(crate) fn fmt_dur(d: chrono::Duration) -> String {
@@ -218,6 +227,13 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("", 5), "");
         assert_eq!(truncate("é😀x", 2), "é…");
+    }
+
+    #[test]
+    fn tool_count_is_singular_for_one() {
+        assert_eq!(fmt_tool_count(0), "0 tools");
+        assert_eq!(fmt_tool_count(1), "1 tool");
+        assert_eq!(fmt_tool_count(2), "2 tools");
     }
 
     #[test]

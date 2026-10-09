@@ -97,12 +97,12 @@ pub struct SessionEntry {
 }
 
 /// A spawned child's own root record (no nested spawn was ever observed, but
-/// any is-a-child file gets this shape). `task`
-/// and `systemPrompt` are measured (up to several KB of free text — the full
-/// work order, not a label) but never read: nothing in the fact vocabulary
-/// carries an agent's full prompt, and using it as a short `description`
-/// would misuse that field. `readOnly`/`spawns`/`tools` are measured, purely
-/// informational, and likewise unread.
+/// any is-a-child file gets this shape). `task` is the full work order (up to
+/// several KB of free text, not a label), so only its first sentence line
+/// becomes the agent's short `description` (see `task_line`). `systemPrompt`
+/// is never read: nothing in the fact vocabulary carries an agent's full
+/// prompt. `readOnly`/`spawns`/`tools` are measured, purely informational,
+/// and likewise unread.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SessionInitEntry {
     #[serde(default)]
@@ -111,6 +111,11 @@ pub struct SessionInitEntry {
     /// file's `agent_type`.
     #[serde(default)]
     pub agent: Option<String>,
+    /// The work order. A `Value`, not a `String`: the whole line is dropped
+    /// when one field fails to parse, so a non-string `task` must not cost
+    /// the agent its `agent` type.
+    #[serde(default)]
+    pub task: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

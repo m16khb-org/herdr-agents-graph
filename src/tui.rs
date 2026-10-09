@@ -102,6 +102,11 @@ pub async fn run(
             }
             last_status_tick = now;
         }
+        // Folds follow every input that moves them, including the ones that
+        // never re-sync the graph themselves (a paused end whose file grows).
+        if app.reconcile_folds() {
+            gate.mark();
+        }
 
         // Draw at the top of the loop, so state changes from the previous
         // iteration are reflected — but only when the frame is stale.

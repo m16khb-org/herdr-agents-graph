@@ -1,8 +1,8 @@
- omp · Demo fixture: rev…   ■ idle  5m02s  77 tok  $0.01    Now   Lanes   Graph
+ omp · Demo fixture: re…   ◦ quiet  5m02s  77 tok  $0.01    Now   Lanes   Graph
   ▶ ● omp  Both subagents are done, thanks.               active 5m02s  54 tok
-      ✓ reviewer  The diff looks correct.                   done 3m58s  14 tok
-      ■ scout  search for review helpers                  stopped 1m57s  5 tok
-      ✓ subagent  Reminder: two tasks are still open.           done 0s  4 tok
+      ✓ 2 done  reviewer, subagent                                      18 tok
+      ■ scout  Look around for related tests.             stopped 1m57s  5 tok
+
 
 
 
@@ -25,9 +25,9 @@
 ---
 0:0-3 fg=fg.neutral bg=bg.layer-default bold
 0:4-6 fg=fg.neutral-subtle bg=bg.layer-default
-0:7-24 fg=fg.neutral-muted bg=bg.layer-default
-0:25-26 fg=fg.neutral bg=bg.layer-default
-0:27-34 fg=fg.neutral-muted bg=bg.layer-default-pressed
+0:7-23 fg=fg.neutral-muted bg=bg.layer-default
+0:24-25 fg=fg.neutral bg=bg.layer-default
+0:26-34 fg=fg.neutral-muted bg=bg.layer-default-pressed
 0:35-35 fg=fg.neutral bg=bg.layer-default
 0:36-40 fg=fg.neutral-muted bg=bg.layer-default
 0:41-55 fg=fg.neutral-subtle bg=bg.layer-default
@@ -50,28 +50,20 @@
 1:78-79 fg=fg.neutral bg=bg.layer-basement
 2:0-5 fg=fg.neutral bg=bg.layer-basement
 2:6-6 fg=fg.positive bg=bg.layer-basement
-2:7-17 fg=fg.neutral bg=bg.layer-basement
-2:18-40 fg=fg.neutral-muted bg=bg.layer-basement
-2:41-59 fg=fg.neutral bg=bg.layer-basement
-2:60-63 fg=fg.positive bg=bg.layer-basement
-2:64-77 fg=fg.neutral-muted bg=bg.layer-basement
+2:7-15 fg=fg.neutral bg=bg.layer-basement
+2:16-33 fg=fg.neutral-muted bg=bg.layer-basement
+2:34-71 fg=fg.neutral bg=bg.layer-basement
+2:72-77 fg=fg.neutral-muted bg=bg.layer-basement
 2:78-79 fg=fg.neutral bg=bg.layer-basement
 3:0-5 fg=fg.neutral bg=bg.layer-basement
 3:6-6 fg=fg.warning bg=bg.layer-basement
 3:7-14 fg=fg.neutral bg=bg.layer-basement
-3:15-39 fg=fg.neutral-muted bg=bg.layer-basement
-3:40-57 fg=fg.neutral bg=bg.layer-basement
+3:15-44 fg=fg.neutral-muted bg=bg.layer-basement
+3:45-57 fg=fg.neutral bg=bg.layer-basement
 3:58-64 fg=fg.warning bg=bg.layer-basement
 3:65-77 fg=fg.neutral-muted bg=bg.layer-basement
 3:78-79 fg=fg.neutral bg=bg.layer-basement
-4:0-5 fg=fg.neutral bg=bg.layer-basement
-4:6-6 fg=fg.positive bg=bg.layer-basement
-4:7-17 fg=fg.neutral bg=bg.layer-basement
-4:18-52 fg=fg.neutral-muted bg=bg.layer-basement
-4:53-63 fg=fg.neutral bg=bg.layer-basement
-4:64-67 fg=fg.positive bg=bg.layer-basement
-4:68-77 fg=fg.neutral-muted bg=bg.layer-basement
-4:78-79 fg=fg.neutral bg=bg.layer-basement
+4:0-79 fg=fg.neutral bg=bg.layer-basement
 5:0-79 fg=fg.neutral bg=bg.layer-basement
 6:0-79 fg=fg.neutral bg=bg.layer-basement
 7:0-79 fg=fg.neutral bg=bg.layer-basement

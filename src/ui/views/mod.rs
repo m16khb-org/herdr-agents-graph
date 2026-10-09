@@ -4,6 +4,7 @@
 pub(crate) mod detail;
 pub(crate) mod graph;
 pub(crate) mod lanes;
+pub(crate) mod minimap;
 pub(crate) mod now;
 
 use chrono::{DateTime, Utc};

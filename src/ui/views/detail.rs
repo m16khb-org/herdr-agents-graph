@@ -11,12 +11,14 @@ use ratatui::{
 };
 
 use crate::state::App;
-use crate::state::session::{AgentInfo, AgentKind, SessionModel, ToolCallInfo, ToolState};
+use crate::state::session::{
+    AgentInfo, AgentKind, AgentStatus, SessionModel, ToolCallInfo, ToolState,
+};
 use crate::ui::seed::theme::{Theme, status_tone, tool_tone};
 use crate::ui::seed::tokens::{bg, brand, fg, stroke};
 use crate::ui::seed::widgets::{Badge, Divider};
 use crate::ui::text::{
-    fmt_clock, fmt_cost, fmt_timing, fmt_tokens, tool_text, truncate, width, wrap,
+    fmt_clock, fmt_cost, fmt_timing, fmt_tokens, fmt_tool_count, tool_text, truncate, width, wrap,
 };
 
 /// Line cap for the prompt (and the reasoning) in the provenance block: it
@@ -36,21 +38,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
         ..
     } = app;
     let surface = theme.surface();
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(
-            theme
-                .fg(stroke::NEUTRAL_CONTRAST)
-                .bg(theme.color(bg::LAYER_DEFAULT)),
-        )
-        .style(surface)
-        .padding(Padding::horizontal(1))
-        .title_top(
-            Line::from(" esc ✕ ")
-                .right_aligned()
-                .style(surface.fg(theme.color(fg::NEUTRAL_SUBTLE))),
-        );
+    let mut block = panel(&theme);
     let inner = block.inner(area);
 
     let Some(agent) = session.agent(agent_id) else {
@@ -73,7 +61,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
     }
 
     let w = usize::from(inner.width);
-    let header = header_lines(&theme, agent, *utc_offset);
+    let header = header_lines(&theme, agent, *utc_offset, w);
     let header_h = header.len() as u16;
     let mut prov = provenance_lines(&theme, session, agent, w);
     prov.truncate(usize::from(
@@ -158,6 +146,88 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
     frame.render_widget(Paragraph::new(lines).style(surface), list);
 }
 
+/// The panel's frame: a rounded focus border with the close hint.
+fn panel(theme: &Theme) -> Block<'static> {
+    let surface = theme.surface();
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(
+            theme
+                .fg(stroke::NEUTRAL_CONTRAST)
+                .bg(theme.color(bg::LAYER_DEFAULT)),
+        )
+        .style(surface)
+        .padding(Padding::horizontal(1))
+        .title_top(
+            Line::from(" esc ✕ ")
+                .right_aligned()
+                .style(surface.fg(theme.color(fg::NEUTRAL_SUBTLE))),
+        )
+}
+
+/// A fold in full: how many are done, their calls and tokens, and one line
+/// per member — status, name, timing, tokens.
+pub(crate) fn render_fold(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, parent: &str) {
+    let block = panel(theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.is_empty() {
+        return;
+    }
+    let folds = app.folds();
+    let members: Vec<&AgentInfo> = folds
+        .by_parent
+        .get(parent)
+        .into_iter()
+        .flatten()
+        .filter_map(|id| app.session.agent(id))
+        .collect();
+    let w = usize::from(inner.width);
+    let muted = theme.fg(fg::NEUTRAL_MUTED);
+    let done = AgentStatus::Done;
+    let mut first = Badge::new(*theme, status_tone(done), "done")
+        .glyph(done.glyph())
+        .spans();
+    first.push(Span::styled(
+        format!(" {} done", members.len()),
+        theme.fg(fg::NEUTRAL).add_modifier(Modifier::BOLD),
+    ));
+    let calls = members.iter().map(|a| a.tool_calls().len()).sum();
+    let tokens = members
+        .iter()
+        .fold(0u64, |sum, a| sum.saturating_add(a.output_tokens));
+    let facts = format!(
+        "{} · {} tok · enter unfolds",
+        fmt_tool_count(calls),
+        fmt_tokens(tokens)
+    );
+    let mut lines = vec![
+        Line::from(first),
+        Line::from(Span::styled(truncate(&facts, w), muted)),
+    ];
+    for agent in members {
+        let mut row = vec![
+            Span::styled(
+                format!("{} ", agent.status.glyph()),
+                Style::default().fg(theme.tone(status_tone(agent.status)).fg),
+            ),
+            Span::styled(agent.display_name().to_string(), theme.fg(fg::NEUTRAL)),
+        ];
+        if let Some(timing) = fmt_timing(agent, app.utc_offset) {
+            row.push(Span::styled(format!("  {timing}"), muted));
+        }
+        if agent.output_tokens > 0 {
+            row.push(Span::styled(
+                format!("  {} tok", fmt_tokens(agent.output_tokens)),
+                muted,
+            ));
+        }
+        lines.push(Line::from(row));
+    }
+    frame.render_widget(Paragraph::new(lines).style(theme.surface()), inner);
+}
+
 /// The status badge: glyph + word + tone, never color alone.
 fn status_badge(theme: &Theme, agent: &AgentInfo) -> Badge {
     Badge::new(*theme, status_tone(agent.status), agent.status_word()).glyph(agent.status.glyph())
@@ -173,8 +243,13 @@ fn tool_glyph(state: ToolState) -> char {
 }
 
 /// Name, state, model, timing, tokens and — only when one was recorded —
-/// cost; then the agent's own description.
-fn header_lines(theme: &Theme, agent: &AgentInfo, offset: FixedOffset) -> Vec<Line<'static>> {
+/// cost, cut to `cols` with an ellipsis; then the agent's own description.
+fn header_lines(
+    theme: &Theme,
+    agent: &AgentInfo,
+    offset: FixedOffset,
+    cols: usize,
+) -> Vec<Line<'static>> {
     let muted = theme.fg(fg::NEUTRAL_MUTED);
     let mut first = status_badge(theme, agent).spans();
     first.push(Span::styled(
@@ -189,14 +264,14 @@ fn header_lines(theme: &Theme, agent: &AgentInfo, offset: FixedOffset) -> Vec<Li
     if let Some(model) = agent.model.as_deref() {
         facts.push(model.to_string());
     }
-    facts.push(format!("{} tools", agent.tool_calls().len()));
+    facts.push(fmt_tool_count(agent.tool_calls().len()));
     facts.push(format!("{} tok", fmt_tokens(agent.output_tokens)));
     if let Some(cost) = agent.cost_usd {
         facts.push(fmt_cost(cost));
     }
     let mut lines = vec![
         Line::from(first),
-        Line::from(Span::styled(facts.join(" · "), muted)),
+        Line::from(Span::styled(truncate(&facts.join(" · "), cols), muted)),
     ];
     if let Some(desc) = agent.description.as_deref().filter(|d| !d.is_empty()) {
         lines.push(Line::from(Span::styled(
@@ -521,6 +596,24 @@ mod tests {
         assert!(without.contains("1.2k tok"), "{without}");
         assert!(!without.contains('$'), "{without}");
         assert!(with.contains("active") || with.contains("idle"));
+    }
+
+    /// A facts line wider than the panel ends in an ellipsis instead of being
+    /// cut mid-word, and one call reads `1 tool`.
+    #[test]
+    fn detail_facts_line_ends_with_ellipsis() {
+        let theme = all_themes()[0];
+        let model = fact(
+            MAIN_ID,
+            0,
+            FactKind::Model("anthropic/claude-opus-5-with-a-long-suffix".into()),
+        );
+        let mut a = app(vec![(0, [vec![model], call(0, 0)].concat())]);
+        let wide = render_detail(&mut a, &theme, 90, 10);
+        assert!(wide[2].contains("· 1 tool ·"), "{wide:#?}");
+        let narrow = render_detail(&mut a, &theme, 40, 10);
+        let facts = narrow[2].trim_end_matches('│').trim_end();
+        assert!(facts.ends_with('…'), "{narrow:#?}");
     }
 
     #[test]

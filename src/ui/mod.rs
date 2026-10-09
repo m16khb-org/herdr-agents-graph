@@ -14,7 +14,7 @@
 pub(crate) mod chrome;
 pub mod seed;
 #[cfg(all(test, feature = "native"))]
-mod snapshots;
+pub(crate) mod snapshots;
 pub(crate) mod text;
 pub(crate) mod views;
 
@@ -82,10 +82,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
 /// The body: the active view, or the selected agent's detail when it has
 /// been opened full-size.
 fn render_body(frame: &mut Frame, body: Rect, app: &mut App, theme: &Theme) {
+    app.normalize_fold_selection();
     // A selection can outlive its agent (a backward seek removes agents).
     let selected = app
         .selected_agent_id()
         .filter(|id| app.session.agent(id).is_some());
+    let fold = app.selection.folded.clone();
     let inset = body.inner(Margin::new(GUTTER, 0));
 
     if app.selection.detail
@@ -95,26 +97,28 @@ fn render_body(frame: &mut Frame, body: Rect, app: &mut App, theme: &Theme) {
         return;
     }
     match app.view {
-        View::Now => match selected.as_deref() {
-            Some(id) if body.width >= SIDE_DETAIL_WIDTH => {
-                // The list keeps the full-row layout (tool chip, tokens) the
-                // 60-99 column band shows; the detail takes the rest, at
-                // most 40 %.
-                let [list, side] = Layout::horizontal([
-                    Constraint::Min(views::now::NARROW),
-                    Constraint::Percentage(40),
-                ])
-                .areas(inset);
-                views::now::render(frame, list, app, theme);
-                let side = Rect {
-                    x: side.x + 1,
-                    width: side.width.saturating_sub(1),
-                    ..side
-                };
-                views::detail::render(frame, side, app, theme, id);
+        View::Now if body.width >= SIDE_DETAIL_WIDTH && (selected.is_some() || fold.is_some()) => {
+            // The list keeps the full-row layout (tool chip, tokens) the
+            // 60-99 column band shows; the detail takes the rest, at most
+            // 40 %.
+            let [list, side] = Layout::horizontal([
+                Constraint::Min(views::now::NARROW),
+                Constraint::Percentage(40),
+            ])
+            .areas(inset);
+            views::now::render(frame, list, app, theme);
+            let side = Rect {
+                x: side.x + 1,
+                width: side.width.saturating_sub(1),
+                ..side
+            };
+            match (selected.as_deref(), fold.as_deref()) {
+                (Some(id), _) => views::detail::render(frame, side, app, theme, id),
+                (None, Some(parent)) => views::detail::render_fold(frame, side, app, theme, parent),
+                (None, None) => {}
             }
-            _ => views::now::render(frame, inset, app, theme),
-        },
+        }
+        View::Now => views::now::render(frame, inset, app, theme),
         View::Lanes => views::lanes::render(frame, inset, app, theme),
         View::Graph => views::graph::render(frame, body, app, theme),
     }
@@ -133,6 +137,7 @@ mod tests {
         let Some(mut app) = snapshots::fixture_app() else {
             return;
         };
+        app.set_view(View::Now);
         app.select_step(0);
         let theme = Theme::new(Mode::Dark, Depth::TrueColor);
         for width in [100, 104, 140] {

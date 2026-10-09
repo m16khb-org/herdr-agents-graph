@@ -16,7 +16,8 @@ use ratatui::{
 use super::attention;
 use super::detail::tool_row;
 use crate::state::App;
-use crate::state::session::{AgentInfo, ToolCallInfo};
+use crate::state::session::{AgentInfo, AgentStatus, SessionModel, ToolCallInfo};
+use crate::state::view::{self, Row};
 use crate::ui::seed::theme::{Theme, Tone, status_tone};
 use crate::ui::seed::tokens::fg;
 use crate::ui::seed::widgets::{Callout, Chip, ListItem, Skeleton};
@@ -38,6 +39,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
         return;
     }
     let wall = app.timeline.now_reference();
+    let folds = app.folds();
     let App {
         session,
         selection,
@@ -72,15 +74,15 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
         return;
     }
 
-    let rows = session.tree_order();
-    let selected = selection
-        .agent
-        .as_deref()
-        .and_then(|id| rows.iter().position(|(r, _)| *r == id));
-    let recent: Vec<&ToolCallInfo> = match selected {
-        Some(i) if selection.expanded => {
+    let rows = view::rows(session, &folds);
+    let selected = rows.iter().position(|row| match *row {
+        Row::Agent { id, .. } => selection.agent.as_deref() == Some(id),
+        Row::Folded { parent, .. } => selection.folded.as_deref() == Some(parent),
+    });
+    let recent: Vec<&ToolCallInfo> = match selected.map(|i| rows[i]) {
+        Some(Row::Agent { id, .. }) if selection.expanded => {
             let mut calls: Vec<_> = session
-                .agent(rows[i].0)
+                .agent(id)
                 .into_iter()
                 .flat_map(|a| a.tool_calls().rev().take(EXPANDED_CALLS))
                 .collect();
@@ -101,7 +103,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
     // Virtual line of the next agent row; expanded calls sit after the
     // selected one.
     let mut line = 0usize;
-    for (i, (id, depth)) in rows.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate() {
         if line >= end {
             break;
         }
@@ -109,30 +111,43 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
         let span = 1 + if is_selected { recent.len() } else { 0 };
         if line + span > offset {
             if line >= offset {
-                let Some(agent) = session.agent(id) else {
-                    line += span;
-                    continue;
-                };
-                let failed = attention.failed.iter().any(|f| f.id == *id);
-                let item = agent_item(
-                    theme,
-                    session.intent_line(id),
-                    agent,
-                    *depth,
-                    RowFlags {
-                        failed,
-                        narrow,
-                        selected: is_selected,
-                        flash: flashing.is_some_and(|f| f.ids.iter().any(|x| x == id)),
-                    },
-                    wall,
-                    *utc_offset,
-                );
                 let rect = Rect::new(list.x, list.y + (line - offset) as u16, list.width, 1);
-                frame.render_widget(item, rect);
-                hit.rows.push((rect, id.to_string()));
+                match *row {
+                    Row::Agent { id, depth } => {
+                        let Some(agent) = session.agent(id) else {
+                            line += span;
+                            continue;
+                        };
+                        let failed = attention.failed.iter().any(|f| f.id == id);
+                        let item = agent_item(
+                            theme,
+                            session.intent_line(id),
+                            agent,
+                            depth,
+                            RowFlags {
+                                failed,
+                                narrow,
+                                selected: is_selected,
+                                flash: flashing.is_some_and(|f| f.ids.iter().any(|x| x == id)),
+                            },
+                            wall,
+                            *utc_offset,
+                        );
+                        frame.render_widget(item, rect);
+                        hit.rows.push((rect, id.to_string()));
+                    }
+                    Row::Folded {
+                        parent,
+                        members,
+                        depth,
+                    } => {
+                        let item = fold_item(theme, session, members, depth, narrow, is_selected);
+                        frame.render_widget(item, rect);
+                        hit.rows.push((rect, view::fold_row_key(parent)));
+                    }
+                }
             }
-            if is_selected {
+            if is_selected && let Row::Agent { depth, .. } = *row {
                 for (k, call) in recent.iter().enumerate() {
                     let at = line + 1 + k;
                     if at < offset || at >= end {
@@ -141,7 +156,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
                     let l = call_line(
                         theme,
                         call,
-                        *depth,
+                        depth,
                         k + 1 == recent.len(),
                         usize::from(list.width),
                         *utc_offset,
@@ -153,6 +168,41 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
         }
         line += span;
     }
+}
+
+/// A fold's row: `✓ 3 done`, the members' names, and their tokens summed.
+fn fold_item(
+    theme: Theme,
+    session: &SessionModel,
+    members: &[String],
+    depth: usize,
+    narrow: bool,
+    selected: bool,
+) -> ListItem {
+    let done = AgentStatus::Done;
+    let agents = || members.iter().filter_map(|id| session.agent(id));
+    let names = agents()
+        .map(AgentInfo::display_name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tokens = agents().fold(0u64, |sum, a| sum.saturating_add(a.output_tokens));
+    let mut trailing = Vec::new();
+    if !narrow && tokens > 0 {
+        trailing.push(Span::styled(
+            format!("{} tok", fmt_tokens(tokens)),
+            theme.fg(fg::NEUTRAL_MUTED),
+        ));
+    }
+    ListItem::new(theme)
+        .depth(depth as u16)
+        .leading(vec![Span::styled(
+            done.glyph().to_string(),
+            Style::default().fg(theme.tone(status_tone(done)).fg),
+        )])
+        .title(format!("{} done", members.len()))
+        .detail(names)
+        .trailing(trailing)
+        .selected(selected)
 }
 
 /// First line shown: the stored offset clamped to the reachable maximum and

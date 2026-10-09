@@ -1,4 +1,4 @@
- omp · Demo fixture: review round   ■ idle  5m02s  77 tok  $0.01                                    Now   Lanes   Graph
+ omp · Demo fixture: review round   ◦ quiet  5m02s  77 tok  $0.01                                   Now   Lanes   Graph
   Time           00:00───────────────────00:01───────────────────00:02───────00:03───────────────────00:04─────────now
   ▶● omp         ━task━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    ✓ reviewer                       ━━
@@ -43,11 +43,11 @@
 0:4-6 fg=fg.neutral-subtle bg=bg.layer-default
 0:7-32 fg=fg.neutral-muted bg=bg.layer-default
 0:33-34 fg=fg.neutral bg=bg.layer-default
-0:35-42 fg=fg.neutral-muted bg=bg.layer-basement
-0:43-43 fg=fg.neutral bg=bg.layer-default
-0:44-48 fg=fg.neutral-muted bg=bg.layer-default
-0:49-63 fg=fg.neutral-subtle bg=bg.layer-default
-0:64-98 fg=fg.neutral bg=bg.layer-default
+0:35-43 fg=fg.neutral-muted bg=bg.layer-basement
+0:44-44 fg=fg.neutral bg=bg.layer-default
+0:45-49 fg=fg.neutral-muted bg=bg.layer-default
+0:50-64 fg=fg.neutral-subtle bg=bg.layer-default
+0:65-98 fg=fg.neutral bg=bg.layer-default
 0:99-103 fg=fg.neutral-subtle bg=bg.layer-default
 0:104-104 fg=fg.neutral bg=bg.layer-default
 0:105-111 fg=fg.brand-contrast bg=bg.layer-default bold underlined
