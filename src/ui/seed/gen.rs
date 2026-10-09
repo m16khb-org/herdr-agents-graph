@@ -108,14 +108,14 @@ impl Doc {
         if a == 255 {
             return Ok([r, g, b]);
         }
-        let [br, bg, bb, ba] = self.resolve_color(BACKDROP, mode)?;
-        if ba != 255 {
+        let [back_r, back_g, back_b, back_a] = self.resolve_color(BACKDROP, mode)?;
+        if back_a != 255 {
             return Err(format!("{BACKDROP} is not opaque in {mode}"));
         }
         Ok([
-            composite(r, br, a),
-            composite(g, bg, a),
-            composite(b, bb, a),
+            composite(r, back_r, a),
+            composite(g, back_g, a),
+            composite(b, back_b, a),
         ])
     }
 }
