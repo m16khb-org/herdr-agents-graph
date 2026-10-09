@@ -1,13 +1,17 @@
-# Issue #6 implementation report (draft)
+# Issue #6 implementation report
 
 ~~~text
-Status: implement and ai-slop-clean done; docs, verify, commit/push and draft PR pending
+Status: completed (draft PR published and verified; completion recorded with this report)
 Lifecycle: io-4b513b64dc69
 Mode/host/model: direct / omp / anthropic/claude-opus-5-5
-Worktree/branch: /Users/m16khb/Workspace/herdr-agents-graph.worktrees/6-seed-ui-redesign / 6-seed-ui-redesign
+Worktree/branch/final HEAD: /Users/m16khb/Workspace/herdr-agents-graph.worktrees/6-seed-ui-redesign / 6-seed-ui-redesign / the commit that adds this report (passed as --final-head)
 Lease generation: 2 (replace + claim after the generation-1 handoff; plan deebc075… and handoff ceb542fd… digests matched before claim)
 Base: 1c744d24931a6634f8dea129c218f1823775f1c0 (main; sync-base preview: merge not needed)
-Acceptance evidence: .issueops/issues/6/gates.md (G1-G12, G15, G16); .issueops/evidence/task-*.txt
+Commits: 966c481 feat(design): vendor SEED Design rootage tokens 3.0.2; 2242a85 feat(ui)!: replace the zoetrope UI with SEED-token Now, Lanes and Graph views; f2759bb chore(issueops): track the plan, gates, report, caution and ADR; plus this report commit. 966c481 builds and tests (--no-run) alone in a clean export.
+Acceptance evidence: .issueops/issues/6/gates.md (G1-G12, G15, G16 met); .issueops/evidence/task-*.txt (local)
+Verification: cargo test --locked 307+13+1 PASS; clippy -D warnings PASS; cargo doc -D warnings PASS; --no-default-features PASS; packaged-tarball lib tests 307 PASS; gate.py G1-G12,G15,G16 PASS; implementation review pass (round 1 revise, 2 deltas); Windows/Linux CI not yet run (G13, prep session)
+Draft PR: https://github.com/m16khb-org/herdr-agents-graph/pull/8 (draft, open, head 6-seed-ui-redesign, base main, label enhancement, assignee m16khb, closes #6; verified with remote verify-artifact)
+Left for the prep session: CI (G13), merge, v0.2.0 release, real install QA (G14), cleanup
 Blockers: none
 ~~~
 
