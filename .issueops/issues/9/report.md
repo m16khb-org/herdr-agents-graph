@@ -1,7 +1,7 @@
 # Issue #9 implementation report
 
 ~~~text
-Status: draft (implementation and gates done; slop-clean, docs, verify, commit and PR follow)
+Status: published as draft PR #10 (https://github.com/m16khb-org/herdr-agents-graph/pull/10); implementation review passed in round 3
 Lifecycle: io-4b513b64dc69
 Mode/host/model: direct / omp → claude / claude-opus-5-5
 Worktree/branch: /Users/m16khb/Workspace/herdr-agents-graph.worktrees/9-ui-polish-graph-default / 9-ui-polish-graph-default
@@ -9,6 +9,7 @@ Lease generation: 3 (generation 2 was the omp session after the generation-1 han
 Base: 5825116416ca9d306cc35ac2964901aa27a17dc9 (main; sync-base preview: merge not needed)
 Acceptance evidence: .issueops/issues/9/gates.md (G1-G6, G8-G12, G10b, G10c, G10d met; G7 abandoned, see below)
 Left for the prep session: CI (G13), merge, v0.3.0 release, real install QA (G14), cleanup
+Commits: feat(ui) fold done subagents and open on the graph view; docs(issueops) fold and minimap decisions; chore(issueops) plan, gates and report
 Blockers: none
 ~~~
 
