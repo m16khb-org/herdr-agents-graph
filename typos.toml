@@ -5,6 +5,8 @@ extend-ignore-re = [
   # The truncation tests assert on deliberately cut strings: "hel…", "sessio…".
   # Anything ending in an ellipsis is a fragment on purpose.
   '"[^"\n]*…"',
+  # The UI goldens cut words to fit a card or a row ("rela…"), unquoted.
+  '\w+…',
   # A hyphenated prefix, not the word "mis" (e.g. "mis-dispatched").
   '\bmis-\w+',
 ]
