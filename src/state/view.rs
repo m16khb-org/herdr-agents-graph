@@ -186,9 +186,22 @@ pub struct FoldSet {
     /// Every agent a fold hides, members and their descendants alike, with
     /// the parent of the fold that shows in its place.
     pub member_of: HashMap<String, String>,
+    /// Every agent a collapsed agent hides (its descendants), with the
+    /// outermost collapsed agent that shows in its place.
+    pub hidden_by: HashMap<String, String>,
+    /// How many agents each shown, collapsed agent hides.
+    pub collapsed: HashMap<String, usize>,
 }
 
-/// Fold the done subagents of each parent that has two or more of them.
+impl FoldSet {
+    /// Whether `id` is off the Now and Graph views.
+    pub fn hides(&self, id: &str) -> bool {
+        self.member_of.contains_key(id) || self.hidden_by.contains_key(id)
+    }
+}
+
+/// Fold the done subagents of each parent that has two or more of them, and
+/// hide everything under each agent in `collapsed`.
 ///
 /// A subagent can fold once it is `Done` for good: a reliable completion
 /// signal pinned it (`is_terminal`), or the replay has ended (`settled`). A
@@ -197,8 +210,14 @@ pub struct FoldSet {
 /// its children apart. The selection plays no part, so every view agrees.
 ///
 /// Folds form in tree order, so an agent inside a hidden subtree is hidden
-/// with it and never starts a fold of its own.
-pub fn fold_set(session: &SessionModel, expanded: &HashSet<String>, settled: bool) -> FoldSet {
+/// with it and never starts a fold of its own. A collapsed agent the user
+/// chose stays on screen; its whole subtree, folds included, goes.
+pub fn fold_set(
+    session: &SessionModel,
+    expanded: &HashSet<String>,
+    collapsed: &HashSet<String>,
+    settled: bool,
+) -> FoldSet {
     let foldable = |id: &str| {
         session.agent(id).is_some_and(|a| {
             a.kind == AgentKind::Subagent
@@ -231,6 +250,12 @@ pub fn fold_set(session: &SessionModel, expanded: &HashSet<String>, settled: boo
         if let Some(fold) = folds.member_of.get(parent).cloned() {
             // Under a hidden agent: hidden with it.
             folds.member_of.insert(id.to_string(), fold);
+        } else if let Some(top) = folds.hidden_by.get(parent).cloned() {
+            *folds.collapsed.entry(top.clone()).or_default() += 1;
+            folds.hidden_by.insert(id.to_string(), top);
+        } else if collapsed.contains(parent) {
+            *folds.collapsed.entry(parent.to_string()).or_default() += 1;
+            folds.hidden_by.insert(id.to_string(), parent.to_string());
         } else if foldable(id)
             && candidates.get(parent).is_some_and(|n| *n >= 2)
             && !expanded.contains(parent)
@@ -244,6 +269,17 @@ pub fn fold_set(session: &SessionModel, expanded: &HashSet<String>, settled: boo
         }
     }
     folds
+}
+
+/// The agents with children in the tree, the ones a collapse can hide
+/// anything under.
+pub fn parents(session: &SessionModel) -> HashSet<String> {
+    let order = session.tree_order();
+    order
+        .windows(2)
+        .filter(|pair| pair[1].1 > pair[0].1)
+        .map(|pair| pair[0].0.to_string())
+        .collect()
 }
 
 /// One line of the Now view, or one card on the graph.
@@ -262,11 +298,12 @@ pub enum Row<'a> {
 }
 
 /// The rows the Now view lists: tree order, with each fold standing in for
-/// its members and everything under them.
+/// its members and everything under them, and nothing a collapse hides.
 pub fn rows<'a>(session: &'a SessionModel, folds: &'a FoldSet) -> Vec<Row<'a>> {
     session
         .tree_order()
         .into_iter()
+        .filter(|(id, _)| !folds.hidden_by.contains_key(*id))
         .filter_map(|(id, depth)| match folds.member_of.get(id) {
             None => Some(Row::Agent { id, depth }),
             Some(parent) => {

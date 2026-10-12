@@ -171,6 +171,15 @@ fn handle_key(key: &KeyEvent, app: &mut App) -> bool {
             app.flow.request_fit_view();
         }
         KeyCode::Char('r' | 'R') => app.relayout_now(),
+        KeyCode::Char('a' | 'A') => app.toggle_auto_layout(),
+
+        // Folding, on the views that fold (the lanes draw every agent).
+        KeyCode::Char('x') if app.view != View::Lanes => {
+            if !app.toggle_collapse() {
+                app.snack("Nothing to fold here");
+            }
+        }
+        KeyCode::Char('X') if app.view != View::Lanes => app.toggle_collapse_all(),
 
         // Overlays.
         KeyCode::Char('?') => app.show_help = !app.show_help,
@@ -497,6 +506,27 @@ mod tests {
             ("s toggles replay pacing", vec![KeyCode::Char('s')], |a| {
                 !a.timeline.compress_gaps
             }),
+            ("a turns auto-arrange off", vec![KeyCode::Char('a')], |a| {
+                !a.auto_layout
+            }),
+            (
+                "x collapses the selected subtree",
+                vec![KeyCode::Char('j'), KeyCode::Char('x')],
+                |a| a.folds().collapsed.get(MAIN_ID) == Some(&2),
+            ),
+            (
+                "x again expands it",
+                vec![KeyCode::Char('j'), KeyCode::Char('x'), KeyCode::Char('x')],
+                |a| a.collapsed.is_empty() && a.folds().hidden_by.is_empty(),
+            ),
+            ("X collapses every subtree", vec![KeyCode::Char('X')], |a| {
+                a.collapsed.contains(MAIN_ID)
+            }),
+            (
+                "X again expands every subtree",
+                vec![KeyCode::Char('X'), KeyCode::Char('X')],
+                |a| a.collapsed.is_empty(),
+            ),
         ];
         for (what, keys, check) in table {
             // The table is written from the Now view (tab order, `enter`).
@@ -673,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_node_drops_follow_to_manual() {
+    fn dragging_a_node_drops_follow_and_auto_arrange() {
         let mut app = App::new("s".into(), Mode::Live);
         app.camera = Camera::Follow;
         process_flow_events(
@@ -684,6 +714,7 @@ mod tests {
             .into_iter(),
         );
         assert_eq!(app.camera, Camera::Manual, "node drag must drop Follow");
+        assert!(!app.auto_layout, "a dragged card stays where it was put");
     }
 
     #[test]

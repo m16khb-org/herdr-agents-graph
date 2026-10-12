@@ -42,6 +42,8 @@ pub struct AgentNode {
     /// Interactive agents (main, forks) word `Running` as "active": we know
     /// there are recent entries, not that a task is executing.
     pub interactive: bool,
+    /// How many agents a collapse hides under this one (0 when expanded).
+    pub hidden: usize,
 }
 
 /// A step-routed parent edge; `running` mirrors the target agent's status so
@@ -86,7 +88,7 @@ fn node_dims(kind: AgentKind) -> (f64, f64) {
 /// Whether a node's content already mirrors the agent — allocation-free
 /// comparison so unchanged agents skip [`build_content`]'s String clones on
 /// every sync (the steady state for almost all agents on almost all ticks).
-fn content_matches(info: &AgentInfo, node: &AgentNode) -> bool {
+fn content_matches(info: &AgentInfo, hidden: usize, node: &AgentNode) -> bool {
     node.title == info.display_name()
         && node.description.as_deref() == info.description.as_deref()
         && node.status == info.status
@@ -94,10 +96,12 @@ fn content_matches(info: &AgentInfo, node: &AgentNode) -> bool {
         && node.last_tool.as_deref() == info.last_tool()
         && node.output_tokens == info.output_tokens
         && node.interactive == info.is_interactive()
+        && node.hidden == hidden
 }
 
-/// Build the [`AgentNode`] content mirrored from an [`AgentInfo`].
-fn build_content(info: &AgentInfo) -> AgentNode {
+/// Build the [`AgentNode`] content mirrored from an [`AgentInfo`], with
+/// `hidden` agents collapsed under it.
+fn build_content(info: &AgentInfo, hidden: usize) -> AgentNode {
     AgentNode {
         title: info.display_name().to_string(),
         description: info.description.clone(),
@@ -106,6 +110,7 @@ fn build_content(info: &AgentInfo) -> AgentNode {
         last_tool: info.last_tool().map(str::to_string),
         output_tokens: info.output_tokens,
         interactive: info.is_interactive(),
+        hidden,
     }
 }
 
@@ -122,6 +127,7 @@ fn fold_content(model: &SessionModel, members: &[String]) -> AgentNode {
         last_tool: None,
         output_tokens: agents().fold(0u64, |sum, a| sum.saturating_add(a.output_tokens)),
         interactive: false,
+        hidden: 0,
     }
 }
 
@@ -175,14 +181,15 @@ fn local_position(flow: &AgentFlow, model: &SessionModel, id: &str, w: f64) -> (
 /// siblings) so they land somewhere sensible even without a relayout.
 ///
 /// A folded agent's node leaves the canvas, its position kept in `parked`,
-/// and each fold gets one card in its first member's place. An agent that
-/// comes back out of a fold returns to its parked position, so folding and
-/// seeking never undo where the user dragged a card.
+/// and each fold gets one card in its first member's place; an agent a
+/// collapse hides leaves the same way, and its collapsed ancestor's card
+/// counts it. An agent that comes back out of a fold or a collapse returns
+/// to its parked position, so folding and seeking never undo where the user
+/// dragged a card.
 ///
-/// When `relayout` is true, any structural change ends with a full
-/// `Sugiyama::vertical()` pass (which overwrites the local placements). When
-/// false — Manual camera: the user owns the view — nothing existing moves;
-/// the caller tracks dirtiness and relayouts when the camera re-engages.
+/// When `relayout` is true (auto-arrange), any structural change ends with
+/// a full `Sugiyama::vertical()` pass, which overwrites the local and parked
+/// placements. When false, nothing existing moves until the user asks.
 /// Returns `true` if structure changed.
 pub fn sync(
     flow: &mut AgentFlow,
@@ -197,7 +204,7 @@ pub fn sync(
     // the agents' positions: a new fold card takes its first member's place.
     let leaving = |id: &str| match fold_of_card(id) {
         Some(parent) => !folds.by_parent.contains_key(parent),
-        None => folds.member_of.contains_key(id),
+        None => folds.hides(id),
     };
     if flow.nodes().any(|n| leaving(&n.id)) {
         flow.retain_nodes(|n| {
@@ -214,32 +221,34 @@ pub fn sync(
 
     // First pass: nodes (must exist before their edges).
     for id in &model.spawn_order {
-        if folds.member_of.contains_key(id) {
+        if folds.hides(id) {
             continue;
         }
         let Some(info) = model.agent(id) else {
             continue;
         };
+        let hidden = folds.collapsed.get(id).copied().unwrap_or(0);
         if let Some(existing) = flow.node_content_mut(id) {
             // Steady state: only rebuild (String clones) when something
             // visible changed — the per-second status tick and per-batch
             // syncs walk every agent, and most are unchanged.
-            if !content_matches(info, existing) {
-                *existing = build_content(info);
+            if !content_matches(info, hidden, existing) {
+                *existing = build_content(info, hidden);
             }
         } else {
             let (w, h) = node_dims(info.kind);
-            // Back where it was before a fold took it; else local placement:
-            // below the parent, fanned past prior siblings. Overwritten by
-            // Sugiyama when `relayout` runs; kept verbatim in Manual so
-            // existing nodes never move underneath the user.
+            // Back where it was before a fold or a collapse took it; else
+            // local placement: below the parent, fanned past prior siblings.
+            // Overwritten by Sugiyama when `relayout` runs; kept verbatim
+            // with auto-arrange off so existing nodes never move underneath
+            // the user.
             let pos = match parked.remove(id) {
                 Some(p) => (p.x, p.y),
                 None => local_position(flow, model, id, w),
             };
             // Duplicate-id is an idempotent no-op; a genuine add is structural.
             if flow
-                .add_node(card(id.clone(), pos, (w, h), build_content(info)))
+                .add_node(card(id.clone(), pos, (w, h), build_content(info, hidden)))
                 .is_ok()
             {
                 structural = true;
@@ -270,7 +279,7 @@ pub fn sync(
     // Second pass: edges from each shown agent, and each fold card, to its
     // parent.
     for id in &model.spawn_order {
-        if folds.member_of.contains_key(id) {
+        if folds.hides(id) {
             continue;
         }
         let Some(info) = model.agent(id) else {

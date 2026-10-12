@@ -21,7 +21,7 @@
 
 
 
-                                   j/k  move  enter  expand  tab  view  ?  help
+                          j/k  move  enter  expand  x  fold  tab  view  ?  help
 ---
 0:0-3 fg=fg.neutral bg=bg.layer-default bold
 0:4-6 fg=fg.neutral-subtle bg=bg.layer-default
@@ -82,12 +82,15 @@
 20:0-79 fg=fg.neutral bg=bg.layer-basement
 21:0-79 fg=fg.neutral bg=bg.layer-basement
 22:0-79 fg=fg.neutral bg=bg.layer-basement
-23:0-33 fg=fg.neutral bg=bg.layer-default
-23:34-38 fg=fg.neutral bg=bg.layer-default-pressed bold
-23:39-43 fg=fg.neutral-subtle bg=bg.layer-default
-23:44-44 fg=fg.neutral bg=bg.layer-default
-23:45-51 fg=fg.neutral bg=bg.layer-default-pressed bold
-23:52-58 fg=fg.neutral-subtle bg=bg.layer-default
+23:0-24 fg=fg.neutral bg=bg.layer-default
+23:25-29 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:30-34 fg=fg.neutral-subtle bg=bg.layer-default
+23:35-35 fg=fg.neutral bg=bg.layer-default
+23:36-42 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:43-49 fg=fg.neutral-subtle bg=bg.layer-default
+23:50-50 fg=fg.neutral bg=bg.layer-default
+23:51-53 fg=fg.neutral bg=bg.layer-default-pressed bold
+23:54-58 fg=fg.neutral-subtle bg=bg.layer-default
 23:59-59 fg=fg.neutral bg=bg.layer-default
 23:60-64 fg=fg.neutral bg=bg.layer-default-pressed bold
 23:65-69 fg=fg.neutral-subtle bg=bg.layer-default

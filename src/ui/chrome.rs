@@ -252,7 +252,12 @@ fn plural(n: usize) -> &'static str {
 /// The keys the hint bar offers for the current view, most useful first.
 fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let mut keys = match app.view {
-        View::Now => vec![("j/k", "move"), ("enter", "expand"), ("tab", "view")],
+        View::Now => vec![
+            ("j/k", "move"),
+            ("enter", "expand"),
+            ("x", "fold"),
+            ("tab", "view"),
+        ],
         View::Lanes => vec![
             ("←/→", "cursor"),
             ("space", "play"),
@@ -261,6 +266,7 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         View::Graph => vec![
             ("j/k", "select"),
+            ("x", "fold"),
             ("hjkl", "pan"),
             ("+/-", "zoom"),
             ("tab", "view"),
@@ -312,7 +318,7 @@ pub(crate) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
     } else {
         "q · ctrl-c"
     };
-    let rows: [(&str, &str); 17] = [
+    let rows: [(&str, &str); 19] = [
         ("tab 1 2 3", "switch view: now · lanes · graph"),
         ("j k ↑ ↓", "select agent (scroll inside the detail)"),
         ("enter", "unfold done · expand the row · full detail"),
@@ -325,7 +331,9 @@ pub(crate) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("h l H J K L", "graph: pan"),
         ("+ - 0", "graph: zoom in / out / reset"),
         ("map", "whole graph; the frame is what you see"),
+        ("x X", "fold or unfold the subtree · every subtree"),
         ("f o r", "follow activity · overview · rearrange"),
+        ("a", "auto-arrange the graph on / off"),
         ("s", "pacing: skip idle gaps while replaying"),
         ("i", "session details"),
         ("pgup pgdn", "scroll the detail list"),

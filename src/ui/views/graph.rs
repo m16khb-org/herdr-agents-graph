@@ -142,10 +142,20 @@ impl NodeContent for AgentNode {
         if ctx.selected {
             title_style = title_style.patch(theme.fg(brand::FG));
         }
-        let mut lines = vec![Line::from(vec![
+        // A collapsed card says how many it hides, after its title.
+        let badge = (self.hidden > 0).then(|| format!(" ▸ +{}", self.hidden));
+        let badge_w = badge.as_deref().map_or(0, width);
+        let mut title = vec![
             Span::styled(format!("{glyph} "), surface.fg(tone.fg)),
-            Span::styled(truncate(&self.title, w.saturating_sub(2)), title_style),
-        ])];
+            Span::styled(
+                truncate(&self.title, w.saturating_sub(2 + badge_w)),
+                title_style,
+            ),
+        ];
+        if let Some(badge) = badge {
+            title.push(Span::styled(badge, surface.patch(theme.fg(brand::FG))));
+        }
+        let mut lines = vec![Line::from(title)];
         if let Some(desc) = self.description.as_deref().filter(|d| !d.is_empty()) {
             lines.push(Line::from(Span::styled(
                 truncate(desc, w),
@@ -220,6 +230,7 @@ mod tests {
             last_tool: Some("Bash".into()),
             output_tokens: 1200,
             interactive: false,
+            hidden: 0,
         };
         let ctx = NodeRenderContext {
             id: "main",

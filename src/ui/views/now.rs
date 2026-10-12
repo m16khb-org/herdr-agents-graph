@@ -129,6 +129,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme
                                 narrow,
                                 selected: is_selected,
                                 flash: flashing.is_some_and(|f| f.ids.iter().any(|x| x == id)),
+                                hidden: folds.collapsed.get(id).copied().unwrap_or(0),
                             },
                             wall,
                             *utc_offset,
@@ -231,6 +232,8 @@ struct RowFlags {
     narrow: bool,
     selected: bool,
     flash: bool,
+    /// How many agents a collapse hides under this one.
+    hidden: usize,
 }
 
 fn agent_item(
@@ -283,10 +286,14 @@ fn agent_item(
         ));
     }
 
+    let title = match flags.hidden {
+        0 => agent.display_name().to_string(),
+        n => format!("{} ▸ +{n}", agent.display_name()),
+    };
     ListItem::new(theme)
         .depth(depth as u16)
         .leading(vec![glyph])
-        .title(agent.display_name())
+        .title(title)
         .detail(intent.unwrap_or("—"))
         .trailing(trailing)
         .selected(flags.selected)

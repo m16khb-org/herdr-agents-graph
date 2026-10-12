@@ -214,6 +214,7 @@ mod tests {
             last_tool: None,
             output_tokens: 0,
             interactive: false,
+            hidden: 0,
         };
         Node::new(id.to_string(), (x, y), (26.0, 6.0), content)
     }

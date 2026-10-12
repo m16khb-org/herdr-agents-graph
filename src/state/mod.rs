@@ -178,10 +178,14 @@ pub struct App {
     pub camera: Camera,
     /// Whether the help overlay is shown (`?` toggles, `esc` closes).
     pub show_help: bool,
-    /// Layout deferred while the camera is Manual: structural changes use
-    /// local placement only (nothing existing moves under the user); the full
-    /// Sugiyama runs when the camera re-engages (`o`/`f`).
+    /// Structural changes not yet laid out: with auto-arrange off they use
+    /// local placement only (nothing existing moves under the user) until
+    /// `r` or `a` runs Sugiyama.
     pub layout_dirty: bool,
+    /// Auto-arrange (`a`): every structural change (an agent arrives, a fold
+    /// or a collapse changes) re-runs Sugiyama. On by default; dragging a
+    /// card turns it off, so the card stays where it was put.
+    pub auto_layout: bool,
     /// Most recent tailer error, surfaced in the hint bar (`None` = healthy).
     pub last_error: Option<String>,
     /// True once the event loop should terminate.
@@ -247,6 +251,8 @@ pub struct App {
     last_statuses: std::collections::HashMap<String, session::AgentStatus>,
     /// Parents whose done subagents the user unfolded (`enter` on a fold).
     pub expanded_folds: std::collections::HashSet<String>,
+    /// Agents whose subtrees the user collapsed (`x`, `X`).
+    pub collapsed: std::collections::HashSet<String>,
     /// Where folded agents' cards stood, so they come back to the same spot.
     pub parked_positions: std::collections::HashMap<String, rataflow::types::Position>,
     /// The folds the graph was last synced with — see
@@ -267,6 +273,7 @@ impl App {
             camera: Camera::Overview,
             show_help: false,
             layout_dirty: false,
+            auto_layout: true,
             last_error: None,
             should_quit: false,
             camera_glide: None,
@@ -291,6 +298,7 @@ impl App {
             utc_offset: *chrono::Local::now().offset(),
             last_statuses: Default::default(),
             expanded_folds: Default::default(),
+            collapsed: Default::default(),
             parked_positions: Default::default(),
             synced_folds: FoldSet::default(),
         }
@@ -517,6 +525,7 @@ impl App {
                 // task names recur), so what the user unfolded or dragged in
                 // the old session must not carry over.
                 self.expanded_folds.clear();
+                self.collapsed.clear();
                 self.parked_positions.clear();
                 self.synced_folds = FoldSet::default();
                 self.selection.folded = None;
@@ -822,14 +831,13 @@ impl App {
 
     /// Project the model onto the flow, the current folds folded away.
     ///
-    /// Layout is user-driven: a Sugiyama pass on every new node reflows the
-    /// whole graph and reads as "jumpy" as a session grows. So sync NEVER
-    /// auto-relayouts — new nodes keep their local placement (below parent,
+    /// With auto-arrange on, any structural change re-runs Sugiyama, so the
+    /// tree stays tidy as agents arrive and subtrees fold. With it off, a
+    /// Sugiyama pass on every new node would read as "jumpy", so nothing
+    /// existing moves: new nodes keep their local placement (below parent,
     /// fanned past siblings), folded cards come back where they stood, and
-    /// nothing existing moves until the user asks to tidy (`r`, or
-    /// re-engaging the camera with `o`/`f`). `layout_dirty` tracks that there
-    /// is un-applied growth for the on-demand path. Returns whether the
-    /// structure changed.
+    /// `layout_dirty` records the growth until the user tidies (`r`, `a`).
+    /// Returns whether the structure changed.
     fn sync_graph(&mut self) -> bool {
         let folds = self.folds();
         let structural = graph::sync(
@@ -837,10 +845,10 @@ impl App {
             &self.session,
             &folds,
             &mut self.parked_positions,
-            false,
+            self.auto_layout,
         );
         self.synced_folds = folds;
-        if structural {
+        if structural && !self.auto_layout {
             self.layout_dirty = true;
         }
         structural
@@ -854,31 +862,41 @@ impl App {
         self.timeline.replay && self.timeline.ended() && self.timeline.at_edge()
     }
 
-    /// The done subagents folded away right now.
+    /// The done subagents folded away and the collapsed subtrees hidden
+    /// right now.
     pub fn folds(&self) -> FoldSet {
-        view::fold_set(&self.session, &self.expanded_folds, self.settled())
+        view::fold_set(
+            &self.session,
+            &self.expanded_folds,
+            &self.collapsed,
+            self.settled(),
+        )
     }
 
     /// Bring the graph in line with the folds, whatever changed them: a model
     /// change, time alone, a seek, the replay settling or the file growing
-    /// under a paused end, or the user unfolding. Called once per loop turn;
-    /// re-syncs only when the folds differ from what the graph was synced
-    /// with. A fold moves no card (layout stays on `r`); the Overview camera
-    /// re-frames. Returns whether the graph changed.
+    /// under a paused end, or the user unfolding or collapsing. Called once
+    /// per loop turn; re-syncs only when the folds differ from what the graph
+    /// was synced with. The cards move only with auto-arrange on; the
+    /// Overview camera re-frames and Follow re-centres. Returns whether the
+    /// graph changed.
     pub fn reconcile_folds(&mut self) -> bool {
         if self.folds() == self.synced_folds {
             return false;
         }
-        if self.sync_graph() && self.camera == Camera::Overview {
-            self.flow.request_fit_view();
+        if self.sync_graph() {
+            match self.camera {
+                Camera::Overview => self.flow.request_fit_view(),
+                Camera::Follow if self.auto_layout => self.track_activity(),
+                _ => {}
+            }
         }
         true
     }
 
     /// Tidy the graph on demand (`r`): run Sugiyama now and reframe for the
-    /// current camera. Layout is never automatic (see `resync`),
-    /// so this is the user's explicit "rearrange". Forces a pass even when not
-    /// `layout_dirty`, so it also re-tidies after manual node dragging.
+    /// current camera. Forces a pass even when not `layout_dirty`, so it also
+    /// re-tidies after manual node dragging.
     pub fn relayout_now(&mut self) {
         graph::relayout(&mut self.flow);
         self.layout_dirty = false;
@@ -887,6 +905,57 @@ impl App {
             Camera::Follow => self.track_activity(),
             Camera::Manual => {}
         }
+    }
+
+    /// Turn auto-arrange on or off (`a`). Turning it on tidies at once.
+    pub fn toggle_auto_layout(&mut self) {
+        self.auto_layout = !self.auto_layout;
+        if self.auto_layout {
+            self.relayout_now();
+            self.snack("Auto-arrange on");
+        } else {
+            self.snack("Auto-arrange off · r rearranges");
+        }
+    }
+
+    /// Fold or unfold at the selection (`x`): a selected fold unfolds; an
+    /// agent with children collapses its subtree, or expands it again; an
+    /// agent unfolded from a done fold folds back. Returns whether anything
+    /// changed.
+    pub fn toggle_collapse(&mut self) -> bool {
+        if self.expand_fold() {
+            return true;
+        }
+        let Some(id) = self.selection.agent.clone() else {
+            return false;
+        };
+        if !self.collapsed.remove(&id) {
+            if !view::parents(&self.session).contains(&id) {
+                return self.collapse_fold();
+            }
+            self.collapsed.insert(id.clone());
+        }
+        self.reconcile_folds();
+        // Auto-arrange may have moved the card: bring it back into view.
+        self.pending_center = Some(id);
+        true
+    }
+
+    /// Collapse every subtree, or, when any is collapsed, expand them all
+    /// (`X`). The done folds stay as they are.
+    pub fn toggle_collapse_all(&mut self) {
+        if self.collapsed.is_empty() {
+            self.collapsed = view::parents(&self.session);
+            if self.collapsed.is_empty() {
+                self.snack("No subagents to collapse");
+                return;
+            }
+            self.snack("Every subtree collapsed");
+        } else {
+            self.collapsed.clear();
+            self.snack("Every subtree expanded");
+        }
+        self.reconcile_folds();
     }
 
     /// Whether `session_id` matches the session currently being watched.
@@ -931,9 +1000,13 @@ impl App {
     /// is an eased glide (`focus_camera` + per-frame
     /// [`tick_camera`](Self::tick_camera)) rather than a teleport.
     pub fn track_activity(&mut self) {
-        let Some(id) = self.session.last_active_agent_id() else {
+        let Some(mut id) = self.session.last_active_agent_id() else {
             return;
         };
+        // Inside a collapsed subtree: the collapsed agent stands in for it.
+        if let Some(top) = self.synced_folds.hidden_by.get(&id) {
+            id = top.clone();
+        }
         self.center_node(&id, true); // Follow: clamp zoom for readability.
         // In Follow the selection narrates the followed agent. This is not a
         // user gesture, so it must not drop Follow the way `select_agent` does.
@@ -944,8 +1017,9 @@ impl App {
 
     /// Glide the camera so `id`'s node ends up centered in the canvas — the
     /// shared move behind Follow's tracking and click-to-center. A folded
-    /// agent is centered by its fold's card. Quiet no-op for an unknown id or
-    /// before the first render.
+    /// agent is centered by its fold's card, a collapsed-away one by its
+    /// collapsed ancestor. Quiet no-op for an unknown id or before the first
+    /// render.
     ///
     /// The pan always glides. `clamp_zoom` additionally snaps the zoom into the
     /// card-readable band — raised to [`FOLLOW_ZOOM`], then clamped down so the
@@ -956,8 +1030,12 @@ impl App {
     /// mismatch reads as jumpy, and Manual = the user's camera). Idempotent when
     /// already at the target, so Follow's per-tick re-tracking never restarts it.
     pub fn center_node(&mut self, id: &str, clamp_zoom: bool) {
+        let folds = &self.synced_folds;
         let Some(node) = self.flow.node(id).or_else(|| {
-            let parent = self.synced_folds.member_of.get(id)?;
+            if let Some(top) = folds.hidden_by.get(id) {
+                return self.flow.node(top);
+            }
+            let parent = folds.member_of.get(id)?;
             self.flow.node(&fold_card_id(parent))
         }) else {
             return;
@@ -1171,7 +1249,8 @@ impl App {
     }
 
     /// In the views that fold (Now, Graph), a selected agent a fold hides
-    /// becomes a selection of that fold, and a selected fold that has come
+    /// becomes a selection of that fold, one a collapse hides becomes a
+    /// selection of the collapsed agent, and a selected fold that has come
     /// apart is let go. The lanes draw every agent, so there the selection
     /// stays as it is. Called on entering a view and before every frame.
     pub fn normalize_fold_selection(&mut self) {
@@ -1179,15 +1258,14 @@ impl App {
             return;
         }
         let folds = self.folds();
-        let hiding = self
-            .selection
-            .agent
-            .as_ref()
-            .and_then(|id| folds.member_of.get(id));
-        if let Some(parent) = hiding {
+        let id = self.selection.agent.as_ref();
+        if let Some(parent) = id.and_then(|id| folds.member_of.get(id)) {
             self.selection.folded = Some(parent.clone());
             self.selection.agent = None;
             self.selection.expanded = false;
+            self.selection.detail = false;
+        } else if let Some(top) = id.and_then(|id| folds.hidden_by.get(id)) {
+            self.mirror_selection(Some(top.clone()));
             self.selection.detail = false;
         } else if self
             .selection
@@ -1230,7 +1308,7 @@ impl App {
         let parent = self.expanded_folds.iter().find(|p| {
             let mut rest = self.expanded_folds.clone();
             rest.remove(*p);
-            view::fold_set(&self.session, &rest, settled)
+            view::fold_set(&self.session, &rest, &self.collapsed, settled)
                 .by_parent
                 .get(*p)
                 .is_some_and(|members| members.iter().any(|m| m == id))
@@ -1365,6 +1443,12 @@ impl App {
             if drop_camera {
                 self.camera = Camera::Manual;
                 self.camera_glide = None;
+            }
+            // A card put somewhere by hand stays there: auto-arrange would
+            // move it back on the next structural change.
+            if matches!(event, FlowEvent::NodeDragged { .. }) && self.auto_layout {
+                self.auto_layout = false;
+                self.snack("Auto-arrange off · a turns it back on");
             }
             if let FlowEvent::SelectionChanged { node_ids, .. } = &event {
                 // A fold's card selects the fold, not an agent.
@@ -2610,6 +2694,14 @@ mod tests {
         let aside = Position::new(-50.0, 80.0);
         app.flow.set_node_position("Reviewer", dragged);
         app.flow.set_node_position("Helper", aside);
+        // The drag itself turns auto-arrange off, which keeps the cards put.
+        app.process_flow_events(
+            [rataflow::FlowEvent::NodeDragged {
+                node_id: "Reviewer".into(),
+            }]
+            .into_iter(),
+        );
+        assert!(!app.auto_layout);
 
         app.go_live();
         app.tick_timeline(std::time::Duration::ZERO);
@@ -2620,5 +2712,106 @@ mod tests {
         app.seek(before_end);
         assert_eq!(app.flow.node("Reviewer").unwrap().position, dragged);
         assert_eq!(app.flow.node("Helper").unwrap().position, aside);
+    }
+
+    /// main → {A, B} with A → {C1, C2}, the done folds unfolded: `x` on A
+    /// collapses its subtree in the rows and on the graph, and expands it.
+    #[test]
+    fn collapsing_a_subtree_hides_it_from_rows_and_graph() {
+        let mut app = nested_tree_app();
+        app.expanded_folds.insert(session::MAIN_ID.into());
+        app.expanded_folds.insert("A".into());
+        app.reconcile_folds();
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "A", "C1", "C2", "B"]);
+
+        app.select_agent(Some("A".into()));
+        assert!(app.toggle_collapse());
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "A", "B"]);
+        assert_graph_matches_rows(&app);
+        assert_eq!(app.flow.node_content_mut("A").unwrap().hidden, 2);
+        assert_eq!(app.selected_agent_id().as_deref(), Some("A"));
+
+        assert!(app.toggle_collapse());
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "A", "C1", "C2", "B"]);
+        assert_graph_matches_rows(&app);
+        assert_eq!(app.flow.node_content_mut("A").unwrap().hidden, 0);
+    }
+
+    /// A selection inside a collapse moves to the collapsed agent, an
+    /// outer collapse hides an inner one whole, and `X` clears them all.
+    #[test]
+    fn collapse_all_and_nested_collapses() {
+        let mut app = nested_tree_app();
+        app.expanded_folds.insert(session::MAIN_ID.into());
+        app.expanded_folds.insert("A".into());
+        app.select_agent(Some("C2".into()));
+        app.toggle_collapse_all();
+        assert_eq!(
+            app.collapsed,
+            [session::MAIN_ID, "A"].map(String::from).into()
+        );
+        assert_eq!(row_keys(&app), [session::MAIN_ID]);
+        assert_eq!(app.folds().collapsed.get(session::MAIN_ID), Some(&4));
+        app.normalize_fold_selection();
+        assert_eq!(app.selected_agent_id().as_deref(), Some(session::MAIN_ID));
+
+        app.toggle_collapse();
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "A", "B"]);
+        assert_eq!(app.folds().collapsed.get("A"), Some(&2));
+
+        app.toggle_collapse_all();
+        assert!(app.collapsed.is_empty());
+        assert_eq!(row_keys(&app), [session::MAIN_ID, "A", "C1", "C2", "B"]);
+    }
+
+    /// Auto-arrange keeps the cards apart through every structural change;
+    /// with it off, nothing existing moves and the growth waits for `r`/`a`.
+    #[test]
+    fn auto_arrange_relayouts_structural_changes_only_when_on() {
+        use rataflow::types::Position;
+        fn assert_apart(app: &App) {
+            let cards: Vec<_> = app.flow.nodes().collect();
+            for (i, a) in cards.iter().enumerate() {
+                for b in &cards[i + 1..] {
+                    let apart = a.position.x + a.width <= b.position.x
+                        || b.position.x + b.width <= a.position.x
+                        || a.position.y + a.height <= b.position.y
+                        || b.position.y + b.height <= a.position.y;
+                    assert!(apart, "{} overlaps {}", a.id, b.id);
+                }
+            }
+        }
+        let mut app = nested_tree_app();
+        app.expanded_folds.insert(session::MAIN_ID.into());
+        app.reconcile_folds();
+        assert_apart(&app);
+
+        app.toggle_auto_layout();
+        assert!(!app.auto_layout);
+        let parked = Position::new(500.0, 500.0);
+        app.flow.set_node_position("B", parked);
+        app.expanded_folds.insert("A".into());
+        app.reconcile_folds();
+        assert_eq!(
+            app.flow.node("B").unwrap().position,
+            parked,
+            "nothing moves"
+        );
+        assert!(app.layout_dirty);
+
+        app.toggle_auto_layout();
+        assert!(!app.layout_dirty);
+        assert_ne!(
+            app.flow.node("B").unwrap().position,
+            parked,
+            "tidied at once"
+        );
+        assert_apart(&app);
+        app.expanded_folds.remove("A");
+        app.reconcile_folds();
+        app.select_agent(Some(session::MAIN_ID.into()));
+        app.toggle_collapse();
+        app.toggle_collapse();
+        assert_apart(&app);
     }
 }

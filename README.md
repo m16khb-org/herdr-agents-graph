@@ -61,7 +61,7 @@ current view.
 | --- | --- | --- |
 | Now | `1` | One row per agent, as a tree: its status, what it is doing (the running tool's stated intent, else its task, else its latest thought), the tool in flight with its timer, and its tokens. Failures rise to the top. `enter` lists the selected agent's last five tool calls. |
 | Lanes | `2` | One lane per agent along time; every tool call is a bar coloured by its result. Long idle stretches fold to `┆12m┆` (`z` unfolds them), and `←` `→` move the cursor. |
-| Graph (default) | `3` | The spawn tree on a canvas you can pan and zoom, framed whole when it opens. The `map` in the top-right corner shows the whole graph at one scale; its frame is the part on screen. |
+| Graph (default) | `3` | The spawn tree on a canvas you can pan and zoom, framed whole when it opens and kept tidy as it grows. The `map` in the top-right corner shows the whole graph at one scale; its frame is the part on screen. |
 
 agents-graph opens on the graph, so the Herdr key (`prefix+shift+z`) shows the
 spawn tree straight away.
@@ -71,6 +71,17 @@ reported their end, or the replay is over), the Now view shows them as one
 row and the graph as one card, `✓ 3 done`, naming them. Select it and press
 `enter` to unfold it; `esc` on one of its agents folds them again. The lanes
 always show every agent.
+
+`x` folds the selected agent's whole subtree into its own card or row, marked
+`▸ +N` with the number of agents it hides, and `x` again unfolds it. `X` folds
+every subtree at once, leaving the root, and `X` again unfolds them all. On a
+`✓ N done` card `x` unfolds it like `enter`, and on one of its agents folds
+them back. A selected agent that a fold hides passes the selection to the
+agent that hides it. The lanes still show every agent.
+
+The graph arranges itself again whenever its shape changes: an agent arrives,
+something folds or unfolds. `a` turns that off and on, and dragging a card
+turns it off so the card stays where you put it; `r` still rearranges once.
 
 From 100 columns the Now view keeps the selected agent's detail open on the
 right: the prompt and the thought that led to its spawn, and every tool call
@@ -90,6 +101,7 @@ each agent's glyph.
 | `tab`, `shift-tab`, `1` `2` `3` | switch view |
 | `j` `k`, `↓` `↑` | select the next or previous agent (scroll inside a full-size detail) |
 | `enter`, `esc` | unfold done agents, expand the row, then open its detail; go back, fold them again |
+| `x`, `X` | Now and Graph: fold or unfold the selected subtree; every subtree |
 | `space` | play or pause |
 | `[` `]` | previous or next prompt |
 | `G`, `g`, `end` | back to live |
@@ -98,6 +110,7 @@ each agent's glyph.
 | `h` `l`, `H` `J` `K` `L` | Graph: pan |
 | `+` `-` `0` | Graph: zoom in, zoom out, reset |
 | `f`, `o`, `r` | follow the active agent, frame everything, rearrange the graph |
+| `a` | Graph: arrange automatically on every change, or not |
 | `s` | replay: skip idle gaps or play in real time |
 | `i`, `?` | session details, every key |
 | `pgup` `pgdn` | scroll the detail's tool list |
@@ -123,6 +136,14 @@ Changed from 0.2.0:
 | minimap | rescaled with every zoom and pan | the whole graph at one scale, with a frame for what is on screen |
 | omp subagent row | its latest thought | the first line of its task |
 | tool count | `1 tools` | `1 tool` |
+
+Changed from 0.3.0:
+
+| What | 0.3.0 | Now |
+| --- | --- | --- |
+| graph layout | moved only on `r` | rearranged on every change in its shape; `a` or a drag turns that off |
+| folding | only `✓ N done` folds | `x` folds any agent's subtree, `X` every subtree |
+| hint bar on Now and Graph | no fold key | `x fold` |
 
 ## Colours
 
