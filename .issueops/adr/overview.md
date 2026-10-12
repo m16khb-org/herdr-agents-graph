@@ -33,3 +33,4 @@ Record structural choices, rejected alternatives, and decisions that affect long
   - <alternative>: <why rejected>
 - Consequences: <tradeoffs and follow-up>
 - Evidence: <files, commands, issues, docs>
+- [Auto-arrange is on by default and users can collapse any subtree](2026-10-12-auto-arrange-is-on-by-default-and-users-can-collapse-any-sub.md)
