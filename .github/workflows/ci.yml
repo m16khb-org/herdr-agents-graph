@@ -148,7 +148,7 @@ jobs:
             from="$UPSTREAM_TIP"
           fi
           echo "commits=$from..$HEAD" >> "$GITHUB_OUTPUT"
-      - uses: crate-ci/committed@v1.1.11
+      - uses: crate-ci/committed@v1.1.12
         with:
           args: "-vv"
           commits: ${{ steps.range.outputs.commits }}
